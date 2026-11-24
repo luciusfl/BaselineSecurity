@@ -1,0 +1,61 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "WatchDog: publish and stage",
+      "dependsOn": [
+        "WatchDog: dotnet publish",
+        "WatchDog: create publish directory",
+        "WatchDog: copy files"
+      ],
+      "dependsOrder": "sequence",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "WatchDog: dotnet publish",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "WatchDog\\WatchDog.csproj",
+        "--configuration",
+        "Release"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "WatchDog: create publish directory",
+      "type": "process",
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "if not exist publish mkdir publish"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "WatchDog: copy files",
+      "type": "process",
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "for %F in (Readme.md Design.md Audit.ps1 Audit.cmd InstallTasks.ps1 Remediations.ps1 Remediations.cmd Rollback.cmd Install.cmd SecurityBaselineSettings.html CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf AuditCheckDetails.json WatchDog\\bin\\WatchDog.exe) do copy /Y %F publish"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

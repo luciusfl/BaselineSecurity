@@ -1,0 +1,6 @@
+{
+    "powershell.powerShellAdditionalExePaths": {
+        "Windows PowerShell 5.1 (x64)": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    },
+    "powershell.powerShellDefaultVersion": "Windows PowerShell 5.1 (x64)"
+}

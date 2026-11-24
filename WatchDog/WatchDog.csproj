@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <OutputPath>$(MSBuildProjectDirectory)\bin\</OutputPath>
+    <PublishDir>$(MSBuildProjectDirectory)\bin\</PublishDir>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>true</SelfContained>
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
+    <AssemblyName>WatchDog</AssemblyName>
+    <RootNamespace>WatchDog</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <!-- WatchDog has no package references of its own; skip the nuget.org vulnerability lookup (NU1900). -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

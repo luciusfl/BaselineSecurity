@@ -1,0 +1,2053 @@
+<h1>WINDOWS 11 SECURITY CONFIGURATION BASELINE</h1>
+
+<h2>PREREQUISITES:</h2>
+<ul>
+  <li>Operating System: Windows 11 or later</li>
+  <li>PowerShell: Version 5.1 (powershell.exe). Comes with Windows 11.</li>
+  <li>Environment: Standalone personal computer (unmanaged, non-domain joined, no corporate Group Policy)</li>
+</ul>
+
+<p><strong>Stand-alone check:</strong> Before it changes anything, Remediations.ps1 checks whether an organization manages the PC. It stops without making changes if any of the following is found:</p>
+<ul>
+  <li>The PC is joined to an Active Directory domain, which is required for domain Group Policy (Win32_ComputerSystem PartOfDomain; <a href="https://learn.microsoft.com/windows/win32/cimwin32prov/win32-computersystem">Microsoft documentation</a>).</li>
+  <li>The PC is joined to Microsoft Entra ID (cloud or hybrid) or to an on-premises device registration service, or a work or school account is registered under Settings &gt; Accounts &gt; Access work or school (dsregcmd /status shows AzureAdJoined, EnterpriseJoined, DomainJoined or WorkplaceJoined as YES; <a href="https://learn.microsoft.com/entra/identity/devices/troubleshoot-device-dsregcmd">Microsoft documentation</a>).</li>
+  <li>The PC is enrolled in MDM such as Microsoft Intune: an active enrollment with an MDM server, or an OMA-DM server account in the registry.</li>
+  <li>The Microsoft Configuration Manager client (service CcmExec) or the Microsoft Intune Management Extension is installed.</li>
+</ul>
+<p>On such a PC, the organization's policies should set these settings. Audit.ps1 still runs because it only reads settings, and Rollback.cmd can still undo changes made before the PC was joined or enrolled. Third-party remote management tools that do not use these Windows mechanisms are not detected.</p>
+
+<p><strong>Number of security checks: more than 300 documented security settings.</strong> The exact number Audit.ps1 runs depends on the computer: each of the 40 system services in the CIS Chapter 5 row is checked separately, and checks for browsers that are not installed or features not available on the installed Windows version are skipped. Settings that Remediations.ps1 configures but Audit.ps1 does not check are marked "not audited" and are not counted.</p>
+
+<p>Under each failed check, Audit.cmd shows what the setting does and why it matters for security. All of this text is in one file, AuditCheckDetails.json, next to Audit.ps1. For CIS recommendations it is the Description and Rationale of the CIS benchmark, copied into that file from the benchmark. For the other checks it is a summary with links to the sources. By default the scheduled hourly audit runs as LocalService, not elevated: the checks that need administrator rights are then not run (SecurityAudit.log lists them as [ELEVATION REQUIRED]) and never count as failures. Install it with <code>Install.cmd -RunAuditElevated</code> to run every check as SYSTEM. The scheduled audit shows the details too, so they are also in %ProgramData%\SecurityAudit\SecurityAudit.log and, after the list of failures, in SecurityAuditErrors.log (the file the "Open log" button of the notification opens).</p>
+
+<p>Checks marked audit-only are not fixed by Remediations.ps1. When one fails, the audit message ends with "Not fixed by Remediations.ps1:" followed by the reason and what to do instead. Where a check accepts more than one value (for example 1 or 2), Remediations.ps1 leaves an existing accepted value unchanged, so a stricter setting is not weakened.</p>
+
+<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-family: sans-serif; width: 100%; table-layout: fixed; overflow-wrap: anywhere;">
+  <colgroup>
+    <col style="width: 12%;">
+    <col style="width: 16%;">
+    <col style="width: 37%;">
+    <col style="width: 18%;">
+    <col style="width: 17%;">
+  </colgroup>
+  <thead>
+    <tr style="background-color: #f2f2f2;">
+      <th>Security Domain</th>
+      <th>Configuration Setting</th>
+      <th>Remarks</th>
+      <th>Expected Secure State</th>
+      <th>Verification</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Boot Integrity</td>
+      <td>Secure Boot</td>
+      <td>Authenticates boot components before Windows loads, helping block bootkits and unauthorized bootloaders. <a href="https://learn.microsoft.com/windows-hardware/design/device-experiences/oem-secure-boot">Microsoft documentation</a>.</td>
+      <td>Enabled (True)</td>
+      <td>PowerShell: Confirm-SecureBootUEFI. Audit-only: a firmware (UEFI) setting that Windows cannot change; turn it on in the firmware setup.</td>
+    </tr>
+    <tr>
+      <td>Boot Integrity</td>
+      <td>TPM 2.0 Status</td>
+      <td>Provides hardware-backed protection for cryptographic keys and device measurements, strengthening BitLocker and platform trust. <a href="https://learn.microsoft.com/windows/security/hardware-security/tpm/trusted-platform-module-overview">Microsoft documentation</a>.</td>
+      <td>Ready &amp; Enabled</td>
+      <td>PowerShell: Get-Tpm. Audit-only: the TPM is switched on in the firmware (Intel PTT or AMD fTPM) or is missing from the hardware; Windows cannot turn it on.</td>
+    </tr>
+    <tr>
+      <td>Kernel Security</td>
+      <td>Memory Integrity (HVCI)</td>
+      <td>Uses virtualization-based security to prevent untrusted code from running in the Windows kernel, reducing kernel compromise risk. <a href="https://learn.microsoft.com/windows-hardware/design/device-experiences/oem-vbs">Microsoft documentation</a>.</td>
+      <td>Enabled (Running)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity (Enabled = 1); PowerShell: Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard (SecurityServicesRunning contains 2). Audit-only: Remediations.ps1 does not turn Memory Integrity on, because an incompatible kernel driver is blocked and, if Windows needs that driver to start, Windows may not boot. Turn it on in Windows Security &gt; Device security &gt; Core isolation, which checks the drivers first and lists incompatible ones; it also needs CPU virtualization (VT-x or AMD-V with SLAT) on in the firmware and a restart. Once it runs, Remediations.ps1 sets the matching policy (CIS 18.9.5.3).</td>
+    </tr>
+    <tr>
+      <td>Credential Protection</td>
+      <td>LSASS Protected Process (RunAsPPL)</td>
+      <td>Restricts access to LSASS, making it harder for malware to dump or tamper with credentials. <a href="https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection">Microsoft documentation</a>.</td>
+      <td>Enabled (1 or 2)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\RunAsPPL. Remediations.ps1 sets RunAsPPL = 2 (LSA protection without UEFI lock, undone by rollback.ps1; restart required) on Windows 11 22H2 (build 22621) and later, and leaves an existing value of 1 or 2 unchanged. Not set automatically on Windows 10, where only RunAsPPL = 1 exists and, on Secure Boot PCs, is stored in a UEFI variable that rollback cannot remove; enable it manually there if you accept that.</td>
+    </tr>
+    <tr>
+      <td>Credential Protection</td>
+      <td>Cached Logon Credentials</td>
+      <td>Limits locally cached domain logons so fewer reusable credential verifiers remain on the device if it is stolen or compromised. <a href="https://learn.microsoft.com/windows/security/identity-protection/access-control/cached-domain-logon-information">Microsoft documentation</a>.</td>
+      <td>Minimal (1-2)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\CachedLogonsCount; Remediations.ps1 sets REG_SZ 2 and leaves an existing REG_SZ 1 unchanged</td>
+    </tr>
+    <tr>
+      <td>Credential Protection</td>
+      <td>Built-in Administrator Account</td>
+      <td>Disabling the well-known privileged account removes a predictable target for password guessing and abuse. <a href="https://learn.microsoft.com/windows/security/identity-protection/access-control/local-accounts">Microsoft documentation</a>.</td>
+      <td>Disabled</td>
+      <td>PowerShell: Get-LocalUser Administrator. Audit-only: disabling it automatically could lock you out if it is the only administrator account.</td>
+    </tr>
+    <tr>
+      <td>Credential Protection</td>
+      <td>Built-in Guest Account</td>
+      <td>Disabling the guest identity prevents an unnecessary shared-access path that could aid unauthorized access or lateral movement. <a href="https://learn.microsoft.com/windows/security/identity-protection/access-control/local-accounts">Microsoft documentation</a>.</td>
+      <td>Disabled</td>
+      <td>PowerShell: Get-LocalUser; identify the built-in account by SID ending in -501</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Real-Time Protection</td>
+      <td>Scans files and activity as they occur, so malware is stopped when it runs and not only found later by a scheduled scan. <a href="https://learn.microsoft.com/defender-endpoint/configure-real-time-protection-microsoft-defender-antivirus">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>PowerShell: Get-MpComputerStatus (RealTimeProtectionEnabled). Audit-only: Tamper Protection blocks scripted changes to this Defender setting; turn it on in Windows Security > Virus &amp; threat protection > Manage settings.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Cloud-Delivered Protection (MAPS)</td>
+      <td>Lets Defender ask Microsoft's cloud about files it does not recognize, which finds new threats faster than signature updates. Basic and Advanced both pass. <a href="https://learn.microsoft.com/defender-endpoint/cloud-protection-microsoft-defender-antivirus">Microsoft documentation</a>.</td>
+      <td>Basic or Advanced (MAPSReporting = 1 or 2)</td>
+      <td>PowerShell: Get-MpPreference (MAPSReporting). Audit-only: Tamper Protection blocks scripted changes to this Defender setting; turn it on in Windows Security > Virus &amp; threat protection > Manage settings.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Sample Submission</td>
+      <td>Lets Microsoft analyze suspicious files that cloud protection flags. Only 'never send' fails: sending safe samples or being prompted passes, and sending all samples is not required, because that is a privacy choice. <a href="https://learn.microsoft.com/defender-endpoint/cloud-protection-microsoft-defender-antivirus">Microsoft documentation</a>.</td>
+      <td>Not turned off (SubmitSamplesConsent is not 2)</td>
+      <td>PowerShell: Get-MpPreference (SubmitSamplesConsent). Audit-only: Tamper Protection blocks scripted changes to this Defender setting; turn it on in Windows Security > Virus &amp; threat protection > Manage settings.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Cloud Protection Level</td>
+      <td>Defender blocks more files that the cloud has no clear verdict for before they run. A few legitimate rare files, such as self-built programs, can be blocked until allowed. Part of the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>, not a CIS recommendation.</td>
+      <td>High or higher (CloudBlockLevel = 2, 4 or 6)</td>
+      <td>PowerShell: Get-MpPreference (CloudBlockLevel). Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback), which sets High (2); a stricter level is kept. Setting it can fail while another antivirus product is active.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Extended Cloud Check</td>
+      <td>Defender can hold a suspicious file for up to 50 more seconds while it waits for the cloud verdict, so fewer new threats run before a verdict arrives. The first opening of an unknown file can be delayed by up to 50 seconds. Part of the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>, not a CIS recommendation.</td>
+      <td>50 seconds (CloudExtendedTimeout = 50)</td>
+      <td>PowerShell: Get-MpPreference (CloudExtendedTimeout). Windows 10 22H2 reports 0 there even when 50 is stored, so when it reports less than 50 the stored registry value decides: HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine\MpBafsExtendedTimeout if set (policy), otherwise HKLM\SOFTWARE\Microsoft\Windows Defender\MpEngine\MpBafsExtendedTimeout. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Removable Drive Scanning</td>
+      <td>Full scans also scan USB sticks and other removable drives that are connected, a common way for malware to reach a PC. Windows turns it off by default. A full scan takes longer when a large drive is connected. Part of the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>, not a CIS recommendation.</td>
+      <td>Enabled (DisableRemovableDriveScanning = False)</td>
+      <td>PowerShell: Get-MpPreference (DisableRemovableDriveScanning). Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Tamper Protection</td>
+      <td>Prevents unauthorized changes to Defender settings, helping stop malware from weakening protection. <a href="https://learn.microsoft.com/defender-endpoint/manage-tamper-protection-microsoft-defender-antivirus">Microsoft documentation</a>.</td>
+      <td>Enabled (IsTamperProtected = True)</td>
+      <td>Audit: Get-MpComputerStatus; enable manually in Windows Security &gt; Virus &amp; threat protection &gt; Manage settings (PowerShell cannot configure during normal operation)</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Windows Exploit Protection</td>
+      <td>Enables mitigations such as DEP, CFG, ASLR, and SEHOP, making memory-corruption attacks harder to exploit. <a href="https://learn.microsoft.com/defender-endpoint/exploit-protection-reference">Microsoft documentation</a>.</td>
+      <td>DEP, CFG, Bottom-Up ASLR, and SEHOP enabled or using Windows defaults (NOTSET); updater corrects explicit OFF states only</td>
+      <td>PowerShell: Get-ProcessMitigation -System; updater: Set-ProcessMitigation -System</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Antivirus Service</td>
+      <td>Keeps the Defender scanning and protection engine operational so configured antivirus defenses can work. <a href="https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-windows">Microsoft documentation</a>.</td>
+      <td>Running</td>
+      <td>PowerShell: Get-Service WinDefend. Audit-only: Windows protects the Defender service from scripted changes, and it stops when another antivirus product is active.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Signature Age</td>
+      <td>Ensures malware intelligence is recent enough to recognize newly identified threats. <a href="https://learn.microsoft.com/defender-endpoint/manage-updates-baselines-microsoft-defender-antivirus">Microsoft documentation</a>.</td>
+      <td>Updated recently</td>
+      <td>PowerShell: Get-MpComputerStatus. Audit-only: signatures arrive through Windows Update, not through a configuration setting.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Potentially Unwanted App (PUA) Protection</td>
+      <td>Blocks unwanted software commonly associated with adware, bundling, or degraded performance before it is installed or run. <a href="https://learn.microsoft.com/defender-endpoint/configure-pua-protection">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>PowerShell: Get-MpPreference (PUAProtection = 1); configured by Remediations.ps1 with Set-MpPreference -PUAProtection Enabled. Rollback restores the original mode (Disabled, Enabled or AuditMode)</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>SmartScreen for Microsoft Store Apps</td>
+      <td>Lets SmartScreen check web content that Microsoft Store apps load, warning about malicious sites. This is the "SmartScreen for Microsoft Store apps" option in Windows Security &gt; App &amp; browser control &gt; Reputation-based protection. <a href="https://learn.microsoft.com/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppHost\EnableWebContentEvaluation = DWORD 1 (machine-wide value; a per-user setting under HKCU is not checked).</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Network Protection</td>
+      <td>Blocks connections to domains and IP addresses known to host phishing, scams, or malicious content. <a href="https://learn.microsoft.com/defender-endpoint/enable-network-protection">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>PowerShell: Get-MpPreference</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Defender Attack Surface Reduction (ASR) Rules</td>
+      <td>Blocks common abuse paths such as Office-spawned malware and credential theft, reducing opportunities for attackers. <a href="https://learn.microsoft.com/defender-endpoint/attack-surface-reduction-rules-reference">Microsoft documentation</a>.</td>
+      <td>Twelve rules in Block mode (action 1): 56a863a9-875e-4185-98a7-b882c64b5ce5 (abuse of exploited vulnerable signed drivers), 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 (credential stealing from LSASS), e6db77e5-3df2-4cf1-b95a-636979351e5b (persistence through WMI event subscription), d4f940ab-401b-4efc-aadc-ad5f3c50688a (Office applications creating child processes), 3b576869-a4ec-4529-8536-b80a7769e899 (Office applications creating executable content), be9ba2d9-53ea-4cdc-84e5-9b1eeee46550 (executable content from email client and webmail), 75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84 (Office applications injecting code into other processes), 92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b (Win32 API calls from Office macros), d3e037e1-3eb8-44c8-a917-57927947596d (JavaScript or VBScript launching downloaded executable content), b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4 (untrusted and unsigned processes that run from USB), 7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c (Adobe Reader creating child processes), 26190899-1602-49e8-8b27-eb1d0a1ce869 (Office communication application creating child processes). Three rules in Audit (2), Warn (6) or Block (1) mode: c1db55ab-c21a-4637-bb3f-a12568109d35 (advanced protection against ransomware), 5beb7efe-fd9a-4556-801d-275e5ffc04cc (potentially obfuscated scripts), d1e49aac-8f56-4280-b9ba-993a6d77406c (process creations originating from PsExec and WMI commands)</td>
+      <td>PowerShell: Get-MpPreference (AttackSurfaceReductionRules_Ids and AttackSurfaceReductionRules_Actions). Follows the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>, with one deviation: the ransomware and obfuscated-script rules, which the Microsoft baseline blocks, start in Audit mode because they can block self-built programs and scripts. The PsExec/WMI process-creation rule is in Audit mode in the Microsoft baseline too; it can block remote administration tools (PsExec, WMI-based management), so review its events before switching it to Block. Remediation: Remediations.ps1 sets the twelve rules to Block and the three rules to Audit; an existing Warn or Block on those three is kept, and other configured ASR rules are left unchanged. Rules in Audit mode only log what they would block (event 1122 in the Microsoft-Windows-Windows Defender/Operational log); switch them to Block yourself after reviewing the events. Audit.ps1 also shows these events as an informational [INFO] block (not a check): the newest ten with rule, process, path, user and command lines, or a hint to consider Block when there are none. Rollback restores the original rule list and actions.</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Controlled Folder Access (Ransomware)</td>
+      <td>Restricts untrusted apps from changing protected files, limiting ransomware damage to important data. <a href="https://learn.microsoft.com/defender-endpoint/controlled-folders">Microsoft documentation</a>.</td>
+      <td>Enabled (On)</td>
+      <td>PowerShell: Get-MpPreference</td>
+    </tr>
+    <tr>
+      <td>Endpoint Protection</td>
+      <td>Vulnerable Driver Blocklist</td>
+      <td>Prevents known vulnerable drivers from loading, reducing opportunities to gain kernel-level privileges. <a href="https://learn.microsoft.com/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>PowerShell: Get-CimInstance Win32_DeviceGuard; registry HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config\VulnerableDriverBlocklistEnable. Audit-only: on by default on Windows 11 22H2 and later; on Windows 10 it is enforced only while Memory Integrity runs.</td>
+    </tr>
+    <tr>
+      <td>Application Control</td>
+      <td>Smart App Control</td>
+      <td>Screens apps for malicious or untrusted code, adding an application execution barrier when the Windows installation supports it. <a href="https://support.microsoft.com/windows/smart-app-control">Microsoft documentation</a>.</td>
+      <td>Enable if available and compatible; otherwise record the actual state. Not a mandatory baseline requirement. Turning it on requires optional diagnostic data, which the Diagnostic Data Level setting below (CIS 18.10.16.1) turns off, so it is a deliberate deviation from CIS (see Design.md, section 11).</td>
+      <td>Manual: Windows Security &gt; App &amp; browser control &gt; Smart App Control settings. Availability and ability to enable depend on Windows installation state; not enforced by the audit or updater.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Microsoft Defender SmartScreen</td>
+      <td>Warns or blocks access to known phishing and malware sites and suspicious downloads in Edge. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-security-smartscreen">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>When Edge is installed: Edge policy registry, HKLM:\SOFTWARE\Policies\Microsoft\Edge\SmartScreenEnabled = DWORD 1</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Edge SmartScreen Potentially Unwanted App Blocking</td>
+      <td>Blocks downloads of potentially unwanted apps, such as adware and bundled software, in Edge. This is the "Block downloads" option of Potentially unwanted app blocking in Windows Security &gt; App &amp; browser control &gt; Reputation-based protection. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/smartscreenpuaenabled">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>When Edge is installed: Edge policy registry, HKLM:\SOFTWARE\Policies\Microsoft\Edge\SmartScreenPuaEnabled = DWORD 1</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Browser Password Export Allowed</td>
+      <td>Disabling password export reduces the chance that saved credentials are copied into an unprotected file. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/passwordexportenabled">Microsoft documentation</a>.</td>
+      <td>Disabled</td>
+      <td>When Edge is installed: Edge policy registry, HKLM:\SOFTWARE\Policies\Microsoft\Edge\PasswordExportEnabled = DWORD 0</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Edge Internet Explorer Mode</td>
+      <td>Internet Explorer mode opens a page in Edge with the retired Internet Explorer 11 engine, the one way that engine still runs on Windows 11. Turning it off removes that exposure; sites that only work in Internet Explorer will no longer open in Edge. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/internetexplorerintegrationlevel">Microsoft documentation (integration level)</a>, <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/internetexplorerintegrationreloadiniemodeallowed">Microsoft documentation (reload in IE mode)</a>.</td>
+      <td>Off (InternetExplorerIntegrationLevel = DWORD 0 and InternetExplorerIntegrationReloadInIEModeAllowed = DWORD 0)</td>
+      <td>When Edge is installed: Edge policy registry, HKLM:\SOFTWARE\Policies\Microsoft\Edge. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Internet Explorer Launch via COM Automation</td>
+      <td>Programs cannot start Internet Explorer 11 through COM automation. iexplore.exe is still on Windows 11, but only as a stub that opens Microsoft Edge; this policy closes the COM route that malware has used to run the old engine. Not a CIS recommendation; it is part of the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>.</td>
+      <td>Disabled (DisableInternetExplorerLaunchViaCOM = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Main\DisableInternetExplorerLaunchViaCOM. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Privacy &amp; Data Minimization</td>
+      <td>Lock Screen Widgets Disabled</td>
+      <td>The lock screen widgets ("Weather and more") show content fetched from the internet on the lock screen before anyone has signed in. Turning them off for all users keeps the lock screen minimal. Not a CIS or Microsoft baseline recommendation. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-newsandinterests">Microsoft documentation</a> (Policy CSP NewsAndInterests, "Disable Widgets On Lock Screen").</td>
+      <td>Disabled (DisableWidgetsOnLockScreen = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Dsh\DisableWidgetsOnLockScreen. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The value 0 hides the widgets and 1 shows them (tested on Windows 11 build 10.0.26300; a web guide on majorgeeks.com also says 0). This matches the values table of the <a href="https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-newsandinterests">Microsoft documentation</a> (0 = Enabled, 1 = Disabled) when its labels are read as the state of the policy "Disable Widgets On Lock Screen"; the behavior is as documented; only the name of the value is misleading, because it suggests the opposite. If Windows ever changes the meaning, the check and the remediation must change together. Without the policy, each user can turn the widgets on in Settings > Personalization > Lock screen.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Edge and Chrome Browsing Data Lifetime</td>
+      <td>Automatically deletes old browsing history, download history and cached files, limiting how much browsing activity is kept on the PC. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/browsingdatalifetime">Microsoft documentation</a>.</td>
+      <td>browsing_history, download_history and cached_images_and_files deleted after at most 720 hours (30 days)</td>
+      <td>Checked separately for each installed browser. Policy registry: BrowsingDataLifetime (REG_SZ JSON) under HKLM:\SOFTWARE\Policies\Microsoft\Edge and HKLM:\SOFTWARE\Policies\Google\Chrome. Remediations.ps1 sets [{"data_types":["browsing_history","download_history","cached_images_and_files"],"time_to_live_in_hours":720}] and keeps an existing value that already covers these data types within 720 hours. Edge ignores this policy while Edge sync is on; Chrome 115 and later turns off Chrome sync for these data types instead. The browser deletes data shortly after it starts and then regularly while it runs.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Edge Extension Install Policy</td>
+      <td>Allow-listing extensions reduces exposure to malicious or over-privileged add-ons that can read or alter browsing data. <a href="https://learn.microsoft.com/deployedge/microsoft-edge-browser-policies/extensioninstallallowlist">Microsoft documentation</a>. Password manager extension IDs: <a href="https://support.1password.com/deploy-1password-browser">1Password</a>, <a href="https://www.dashlane.com/blog/disable-browser-password-manager-gpo">Dashlane</a>.</td>
+      <td>All extensions blocked by default, and no enabled extension outside the approved list. Approved Edge extensions: bbcinlkgjjkejfdpemiealijmmooekmp (LastPass, Edge Add-ons ID), ghbmnnjooekpmoecnnnilnnbdlolhkhi (Google Docs Offline, Chrome Web Store ID; not offered in the Edge Add-ons store), jmjflgjpcpepeafmmgdpfkogkghcpiha (Microsoft Edge relevant text changes, default Edge component), gcllgfdnfnllodcaambdaknbipemelie (Proton Pass, Edge Add-ons ID), ndcileolkflehcjpmjnfbnaibdcgglog (AdBlock, Edge Add-ons ID), cimighlppcgcoapaliogpjjdehbnofhn (uBlock Origin Lite, Edge Add-ons ID), aapbdbdomjkkjkaonfhkkikfgjllcleb (Google Translate, Chrome Web Store ID; not offered in the Edge Add-ons store), jbkfoedolllekgbhcbcoahefnbanhhlh (Bitwarden, Edge Add-ons ID), dppgmdbiimibapkepcbdbmkaabgiofem (1Password, Edge Add-ons ID), gehmmocbbkpblljhkekmfhjpfbkclbph (Dashlane, Edge Add-ons ID)</td>
+      <td>Only checked when the Edge executable is found in Program Files or in an installed user's profile. Edge and Chrome each have their own allow-list, because the same extension has a different ID in each store; when both browsers are installed, each is checked against its own list. Audit: passes when ExtensionInstallBlocklist contains * (all extensions blocked by default) and no enabled extension outside the approved list is installed in any Edge profile of any local user (one folder per extension under %LOCALAPPDATA%\Microsoft\Edge\User Data\&lt;profile&gt;\Extensions; built-in browser components are not stored there). Installed but disabled extensions are allowed: the on/off state is read from the browser profile's Secure Preferences and Preferences files (extensions.settings: a non-zero disable_reasons, or the older state = 0, means disabled); an installed extension without such an entry counts as enabled. An installed extension is not reported when (a) its folder has no manifest.json (a leftover the browser cannot load), (b) the browser saved it as disabled, or (c) the machine policy blocks it: ExtensionInstallBlocklist contains *, the machine ExtensionInstallAllowlist key exists (so per-user policy cannot widen it), no ExtensionSettings policy overrides these lists, and its ID is neither on the registry allow-list nor in ExtensionInstallForcelist. The browser checks this policy before loading extensions, so such an extension cannot run even while a user's saved state still says enabled (until that user starts the browser again, which then disables it). As a result the audit passes right after Remediations.ps1 has set the policy. The state is what the browser last saved, and a user can turn a disabled extension back on at any time; the next audit then reports it. A failure lists each enabled unapproved extension that the policy does not block by name, with its ID and the Windows user and browser profile it is installed in, comma-separated, for example: LastPass: Free Password Manager (bbcinlkgjjkejfdpemiealijmmooekmp, luciu\Default). Approved extensions do not have to be installed, and the registry allow-list is not compared with the approved list, so a newly approved ID that Remediations.ps1 has not written yet does not cause a failure. Remediation: Remediations.ps1 sets ExtensionInstallBlocklist (1 = *) and ExtensionInstallAllowlist (the approved IDs) under HKLM:\SOFTWARE\Policies\Microsoft\Edge. It does not uninstall extensions: with the block-all policy the browser disables an unapproved extension, and removing it from the browser's extensions page is a manual step.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Extension Install Policy</td>
+      <td>Allow-listing extensions reduces exposure to malicious or over-privileged add-ons that can read or alter browsing data.</td>
+      <td>All extensions blocked by default, and no enabled extension outside the approved list. Approved Chrome extensions: hdokiejnpimakedhajhdlcegeplioahd (LastPass, Chrome Web Store ID), ghbmnnjooekpmoecnnnilnnbdlolhkhi (Google Docs Offline, Chrome Web Store ID), ghmbeldphafepmbegfdlkpapadhbakde (Proton Pass, Chrome Web Store ID), gighmmpiobklfepjocnamgkkbiglidom (AdBlock, Chrome Web Store ID), ddkjiahejlhfcafbddmgiahcphecmpfh (uBlock Origin Lite, Chrome Web Store ID), aapbdbdomjkkjkaonfhkkikfgjllcleb (Google Translate, Chrome Web Store ID), nngceckbapebfimnlniiiahkandclblb (Bitwarden, Chrome Web Store ID), aeblfdkhhhdcdjpifhhbdiojplfjncoa (1Password, Chrome Web Store ID), fdjamakpfbbddfjaooikfcpapjohcfmg (Dashlane, Chrome Web Store ID)</td>
+      <td>Only checked when the Chrome executable is found in Program Files or in an installed user's profile. Uses its own allow-list of Chrome Web Store IDs, separate from the Edge list. Audit: passes when ExtensionInstallBlocklist contains * (all extensions blocked by default) and no enabled extension outside the approved list is installed in any Chrome profile of any local user (one folder per extension under %LOCALAPPDATA%\Google\Chrome\User Data\&lt;profile&gt;\Extensions; built-in browser components are not stored there). Installed but disabled extensions are allowed: the on/off state is read from the browser profile's Secure Preferences and Preferences files (extensions.settings: a non-zero disable_reasons, or the older state = 0, means disabled); an installed extension without such an entry counts as enabled. An installed extension is not reported when (a) its folder has no manifest.json (a leftover the browser cannot load), (b) the browser saved it as disabled, or (c) the machine policy blocks it: ExtensionInstallBlocklist contains *, the machine ExtensionInstallAllowlist key exists (so per-user policy cannot widen it), no ExtensionSettings policy overrides these lists, and its ID is neither on the registry allow-list nor in ExtensionInstallForcelist. The browser checks this policy before loading extensions, so such an extension cannot run even while a user's saved state still says enabled (until that user starts the browser again, which then disables it). As a result the audit passes right after Remediations.ps1 has set the policy. The state is what the browser last saved, and a user can turn a disabled extension back on at any time; the next audit then reports it. A failure lists each enabled unapproved extension that the policy does not block by name, with its ID and the Windows user and browser profile it is installed in, comma-separated, for example: LastPass: Free Password Manager (bbcinlkgjjkejfdpemiealijmmooekmp, luciu\Default). Approved extensions do not have to be installed, and the registry allow-list is not compared with the approved list, so a newly approved ID that Remediations.ps1 has not written yet does not cause a failure. Remediation: Remediations.ps1 sets ExtensionInstallBlocklist (1 = *) and ExtensionInstallAllowlist (the approved IDs) under HKLM:\SOFTWARE\Policies\Google\Chrome. It does not uninstall extensions: with the block-all policy the browser disables an unapproved extension, and removing it from the browser's extensions page is a manual step.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Safe Browsing Protection Level</td>
+      <td>Safe Browsing is Chrome's counterpart to Microsoft Defender SmartScreen: it warns before phishing and malware sites and dangerous downloads. The policy keeps it from being turned off. <a href="https://chromeenterprise.google/policies/#SafeBrowsingProtectionLevel">Google documentation</a>.</td>
+      <td>Standard or enhanced protection (SafeBrowsingProtectionLevel = DWORD 1 or 2)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\SafeBrowsingProtectionLevel (0 = off, 1 = standard, 2 = enhanced). CIS Chrome 2.15.2. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Remediations.ps1 sets 1 (standard) and leaves an existing 2 (enhanced, which sends more browsing data to Google) unchanged.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Safe Browsing Warnings Cannot Be Bypassed</td>
+      <td>Users cannot click through a Safe Browsing warning to a phishing or malware page. <a href="https://chromeenterprise.google/policies/#DisableSafeBrowsingProceedAnyway">Google documentation</a>.</td>
+      <td>Enabled (DisableSafeBrowsingProceedAnyway = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\DisableSafeBrowsingProceedAnyway. CIS Chrome 2.15.3. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Download Restrictions</td>
+      <td>Downloads that Safe Browsing identifies as malicious are blocked. <a href="https://chromeenterprise.google/policies/#DownloadRestrictions">Google documentation</a>.</td>
+      <td>Block malicious downloads (DownloadRestrictions = DWORD 4), or the stricter 1, 2 or 3</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\DownloadRestrictions (0 = no special restrictions, 1 = block malicious and dangerous file types, 2 = block potentially dangerous downloads, 3 = block all downloads, 4 = block malicious downloads). CIS Chrome 2.42. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Remediations.ps1 sets 4 (Google's recommended value) and leaves an existing 1, 2 or 3, which block more, unchanged.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Component Updates</td>
+      <td>Chrome components (for example the Safe Browsing lists and certificate revocation data) keep updating. <a href="https://chromeenterprise.google/policies/#ComponentUpdatesEnabled">Google documentation</a>.</td>
+      <td>Enabled (ComponentUpdatesEnabled = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\ComponentUpdatesEnabled. CIS Chrome 2.37. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Automatic Updates</td>
+      <td>An outdated browser is the most exposed program on a PC; Google Update must keep updating Chrome. <a href="https://support.google.com/chrome/a/answer/6350036">Google documentation</a>.</td>
+      <td>Always allow updates or automatic updates only (Update{8A69D345-D564-463C-AFF1-A69D9E530F96} = DWORD 1 or 3)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Update\Update{8A69D345-D564-463C-AFF1-A69D9E530F96} (the Google Update policy 'Update policy override' for Chrome; 0 = updates disabled, 1 = always allow updates, 2 = manual updates only, 3 = automatic updates only). CIS Chrome 4.2. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Remediations.ps1 sets 1 and leaves an existing 3 unchanged.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Remote Debugging Disabled</td>
+      <td>Information-stealing malware starts Chrome with remote debugging to read session cookies and take over signed-in accounts. <a href="https://chromeenterprise.google/policies/#RemoteDebuggingAllowed">Google documentation</a>.</td>
+      <td>Disabled (RemoteDebuggingAllowed = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\RemoteDebuggingAllowed. CIS Chrome 2.69. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Web developers who debug with Chrome DevTools through a remote debugging port are affected.</td>
+    </tr>
+    <tr>
+      <td>Browser Security</td>
+      <td>Chrome Application-Bound Encryption</td>
+      <td>Saved cookies and passwords are bound to Chrome, so other programs running as the user cannot simply decrypt them. <a href="https://chromeenterprise.google/policies/#ApplicationBoundEncryptionEnabled">Google documentation</a>.</td>
+      <td>Enabled (ApplicationBoundEncryptionEnabled = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Google\Chrome\ApplicationBoundEncryptionEnabled. CIS Chrome 2.88. Only checked when Chrome is installed. From the CIS Google Chrome Group Policy Benchmark v1.1.1, which is written for domain-joined PCs; the baseline takes only the recommendations with a clear security value on a stand-alone PC. Values follow Google's own policy definitions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).</td>
+    </tr>
+    <tr>
+      <td>Privacy &amp; Data Minimization</td>
+      <td>Diagnostic Data Level</td>
+      <td>Minimizing diagnostic data limits information sent from the device; this is primarily a privacy control rather than direct threat prevention. <a href="https://learn.microsoft.com/windows/privacy/configure-windows-diagnostic-data-in-your-organization">Microsoft documentation</a>.</td>
+      <td>Updater sets AllowTelemetry = 0 (diagnostic data off on supported editions); audit skips this check if the policy is unset. This also keeps Smart App Control unavailable, because it requires optional diagnostic data. If Smart App Control is already On or in Evaluation, or its state cannot be read, the updater leaves this setting alone and the audit skips the check, because turning optional diagnostic data off could disable Smart App Control, which rollback cannot undo (see Design.md, section 11).</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection\AllowTelemetry</td>
+    </tr>
+    <tr>
+      <td>Privacy &amp; Data Minimization</td>
+      <td>Tailored Experiences</td>
+      <td>Disabling data-based personalization limits profiling and use of diagnostic data for suggestions; this is primarily a privacy control. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience#disabletailoredexperienceswithdiagnosticdata">Microsoft documentation</a>.</td>
+      <td>Disabled (DisableTailoredExperiencesWithDiagnosticData = 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent\DisableTailoredExperiencesWithDiagnosticData</td>
+    </tr>
+    <tr>
+      <td>Privacy &amp; Data Minimization</td>
+      <td>Consumer Features and App Suggestions</td>
+      <td>Suppresses suggested apps and consumer content that could prompt unwanted downloads or changes, reducing unwanted-software and privacy exposure. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-experience#disablewindowsconsumerfeatures">Microsoft documentation</a>.</td>
+      <td>Disabled (DisableWindowsConsumerFeatures = 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent\DisableWindowsConsumerFeatures</td>
+    </tr>
+    <tr>
+      <td>Privacy &amp; Data Minimization</td>
+      <td>Advertising ID Tracking</td>
+      <td>Disables app use of the advertising identifier for cross-app personalization and tracking; this is primarily a privacy safeguard. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-privacy#disabledbygroup-policy">Microsoft documentation</a>.</td>
+      <td>Disabled by policy (DisabledByGroupPolicy = 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo\DisabledByGroupPolicy</td>
+    </tr>
+    <tr>
+      <td>Access Control</td>
+      <td>User Account Control (UAC)</td>
+      <td>Requires administrative operations to use elevation, limiting silent system-wide changes by malware running as a standard user. <a href="https://learn.microsoft.com/windows/security/application-security/application-control/user-account-control/">Microsoft documentation</a>.</td>
+      <td>Enabled (1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableLUA (DWORD); configured by Remediations.ps1; restart required if changed</td>
+    </tr>
+    <tr>
+      <td>Access Control</td>
+      <td>Administrative Elevation Prompt</td>
+      <td>Requires administrator consent instead of silently elevating, helping prevent unauthorized privileged actions. <a href="https://learn.microsoft.com/windows/security/application-security/application-control/user-account-control/settings-and-configuration">Microsoft documentation</a>.</td>
+      <td>Prompt for consent on secure desktop; no silent elevation (ConsentPromptBehaviorAdmin = 2)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\ConsentPromptBehaviorAdmin (DWORD); configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Access Control</td>
+      <td>Secure Desktop for Elevation Prompts</td>
+      <td>Displays elevation prompts on an isolated secure desktop, reducing the chance that ordinary processes spoof or interact with the prompt. <a href="https://learn.microsoft.com/windows/security/application-security/application-control/user-account-control/settings-and-configuration">Microsoft documentation</a>.</td>
+      <td>Enabled (PromptOnSecureDesktop = 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\PromptOnSecureDesktop (DWORD); configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Access Control</td>
+      <td>Automatic Screen Lock</td>
+      <td>Locks an unattended session after inactivity so nearby people cannot use an already-authenticated desktop. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/interactive-logon-machine-inactivity-limit">Microsoft documentation</a>.</td>
+      <td>Lock after 360 seconds of inactivity</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\InactivityTimeoutSecs (DWORD); configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Access Control</td>
+      <td>Autorun / Autoplay Restrictions</td>
+      <td>Prevents removable media from automatically launching content, reducing malware execution from USB and other drives. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/turn-off-autoplay">Microsoft documentation</a>.</td>
+      <td>Disabled for all drive types (NoDriveTypeAutoRun = 255)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\NoDriveTypeAutoRun</td>
+    </tr>
+    <tr>
+      <td>Access Control (CIS 2.3.4.1)</td>
+      <td>Prevent Non-Administrators from Installing Printer Drivers</td>
+      <td>Only Administrators can install a printer driver when connecting to a shared printer. This does not affect adding local printers or normal printing with installed drivers, and the Print Spooler remains enabled. <a href="https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/devices-prevent-users-from-installing-printer-drivers">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=163">CIS PDF p162</a></td>
+      <td>Enabled (AddPrinterDrivers = DWORD 1)</td>
+      <td>Audit and remediation: HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.1)</td>
+      <td>Allow Print Spooler to Accept Client Connections</td>
+      <td>Reduces remote Print Spooler attack surface. The Print Spooler remains enabled and local printing continues; remote client connections and printer sharing are restricted. Restarting the Print Spooler is required for this policy to take effect; remediation does not restart it automatically to avoid interrupting active jobs. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=601">CIS PDF p600</a></td>
+      <td>Disabled (RegisterSpoolerRemoteRpcEndPoint = DWORD 2)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.2)</td>
+      <td>Print Spooler Redirection Guard</td>
+      <td>Prevents non-administrators from redirecting files within the Print Spooler process. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=603">CIS PDF p602</a></td>
+      <td>Enabled (RedirectionguardPolicy = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.3)</td>
+      <td>Outgoing Print RPC Protocol</td>
+      <td>Uses TCP instead of named pipes for outgoing RPC connections to remote print servers. Older printer configurations that depend on named pipes may stop working. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=605">CIS PDF p604</a></td>
+      <td>RPC over TCP (RpcUseNamedPipeProtocol = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.4)</td>
+      <td>Outgoing Print RPC Authentication</td>
+      <td>Uses the Windows default authentication behavior for outgoing print RPC connections. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=607">CIS PDF p606</a></td>
+      <td>Enabled: Default (RpcAuthentication = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.5)</td>
+      <td>Incoming Print RPC Protocol</td>
+      <td>Allows incoming print RPC over TCP. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=609">CIS PDF p608</a></td>
+      <td>RPC over TCP (RpcProtocols = DWORD 5)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.6)</td>
+      <td>Incoming Print RPC Authentication</td>
+      <td>Requires negotiated authentication; configuring Kerberos instead also conforms, although Kerberos is generally not used by standalone home PCs. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=611">CIS PDF p610</a></td>
+      <td>Negotiate or Kerberos (ForceKerberosForRpc = DWORD 0 or 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.7)</td>
+      <td>Print RPC TCP Port</td>
+      <td>Uses a dynamic TCP port for print RPC rather than a fixed port. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=613">CIS PDF p612</a></td>
+      <td>Dynamic port (RpcTcpPort = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.8)</td>
+      <td>Print RPC Packet Privacy</td>
+      <td>Requires packet-level privacy on incoming print RPC connections. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=615">CIS PDF p614</a></td>
+      <td>Enabled (RpcAuthnLevelPrivacyEnabled = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Print</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.9)</td>
+      <td>Windows Protected Print</td>
+      <td>Enables Windows Protected Print. Older non-Mopria printer drivers may be affected; install packages can still be used for third-party drivers, but only Mopria-certified drivers are deployed via Windows Update. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=617">CIS PDF p616</a></td>
+      <td>Enabled (WindowsProtectedPrintGroupPolicyState = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\WPP</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.10)</td>
+      <td>Administrator-Only Print Driver Installation</td>
+      <td>Restricts printer driver installation to Administrators. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=619">CIS PDF p618</a></td>
+      <td>Enabled (RestrictDriverInstallationToAdministrators = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.11)</td>
+      <td>Queue-Specific Print File Processing</td>
+      <td>Limits queue-specific files to color profiles, reducing the files the Print Spooler processes. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=621">CIS PDF p620</a></td>
+      <td>Limit to color profiles (CopyFilesPolicy = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.12)</td>
+      <td>Point and Print: New Connection Driver Prompt</td>
+      <td>Shows a warning and requires elevation when installing drivers for a new Point and Print connection. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=623">CIS PDF p622</a></td>
+      <td>Show warning and elevation prompt (NoWarningNoElevationOnInstall = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.13)</td>
+      <td>Point and Print: Existing Connection Driver Prompt</td>
+      <td>Shows a warning and requires elevation when updating drivers for an existing Point and Print connection. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=625">CIS PDF p624</a></td>
+      <td>Show warning and elevation prompt (UpdatePromptSettings = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.14)</td>
+      <td>Require IPPS for IPP Printers</td>
+      <td>Requires IPP printers to use IPP over HTTPS. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=627">CIS PDF p626</a></td>
+      <td>Enabled (RequireIpps = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\IPP</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.15)</td>
+      <td>IPP: Reject Invalid Certificate Authorities</td>
+      <td>Rejects IPP certificates issued by an invalid or untrusted certificate authority. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=629">CIS PDF p628</a></td>
+      <td>Enabled (SecurityFlagsBlockUnknownCA = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\IPP</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.16)</td>
+      <td>IPP: Reject Non-Server Certificates</td>
+      <td>Rejects IPP certificates not valid for server authentication. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=631">CIS PDF p630</a></td>
+      <td>Enabled (SecurityFlagsBlockCertWrongUsage = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\IPP</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.17)</td>
+      <td>IPP: Reject Invalid Certificate Names</td>
+      <td>Rejects IPP certificates whose common name does not match the printer. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=633">CIS PDF p632</a></td>
+      <td>Enabled (SecurityFlagsBlockCertCNInvalid = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\IPP</td>
+    </tr>
+    <tr>
+      <td>Printers (CIS 18.7.18)</td>
+      <td>IPP: Reject Invalid Certificate Dates</td>
+      <td>Rejects IPP certificates outside their validity period. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=635">CIS PDF p634</a></td>
+      <td>Enabled (SecurityFlagsBlockCertDateInvalid = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\IPP</td>
+    </tr>
+    <tr>
+      <td>Printers</td>
+      <td>Windows Ready Print Driver Ranking</td>
+      <td>Windows prefers the Microsoft IPP Class Driver, which is built into Windows and updated through Windows Update, for printers that support IPP (network and USB), instead of a driver from the printer manufacturer. Third-party print drivers run in the Print Spooler as SYSTEM, so this reduces third-party code with system rights. It affects only printers set up later; an installed printer keeps its driver until it is removed and added again. Read by Windows 11 24H2 and later; older versions ignore it. Not a CIS recommendation; it is part of the <a href="https://www.microsoft.com/en-us/download/details.aspx?id=55319">Microsoft security baseline for Windows 11 26H2</a>.</td>
+      <td>Enabled (on by default; off only if UseWindowsReadyPrintDriverRankingGroupPolicy or UseWindowsReadyPrintDriverRanking = 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\DriverRanking. Windows uses the policy value UseWindowsReadyPrintDriverRankingGroupPolicy if present, otherwise the local setting UseWindowsReadyPrintDriverRanking, otherwise the feature is on. Audit-only: Windows creates this key so that only SYSTEM can change it (administrators may only read it), so Remediations.ps1 does not set the policy; changing the permissions of the key would weaken a protection Windows put there. Audit: Audit.ps1 checks the effective state.</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.1)</td>
+      <td>Password History</td>
+      <td>Prevents reuse of recently used local-account passwords. These standalone policies apply to local Windows accounts, not Microsoft account, Entra ID, or domain-managed credentials. CIS Microsoft Windows 11 Stand-alone Benchmark v5.0.0 recommendation 1.1.1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=39">CIS PDF p38</a></td>
+      <td>At least 24 remembered passwords</td>
+      <td>Audit and updater: secedit System Access\PasswordHistorySize</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.2)</td>
+      <td>Maximum Password Age</td>
+      <td>Expires local-account passwords periodically, as recommended by CIS v5.0.0. This requires users to change passwords and can cause disruption if an account's password has already exceeded the new limit. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=42">CIS PDF p41</a></td>
+      <td>Between 1 and 365 days; the updater preserves any already-compliant value</td>
+      <td>Audit and updater: secedit System Access\MaximumPasswordAge</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.3)</td>
+      <td>Minimum Password Age</td>
+      <td>Prevents rapid password cycling that would defeat password history. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=44">CIS PDF p43</a></td>
+      <td>At least 1 day</td>
+      <td>Audit and updater: secedit System Access\MinimumPasswordAge</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.4)</td>
+      <td>Minimum Password Length</td>
+      <td>Requires longer local-account passwords. The relaxed-length policy is enabled separately to support passwords longer than the legacy 14-character limit. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=47">CIS PDF p46</a></td>
+      <td>At least 14 characters; the updater preserves any longer existing minimum</td>
+      <td>Audit and updater: secedit System Access\MinimumPasswordLength</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.5)</td>
+      <td>Password Complexity</td>
+      <td>Requires local-account passwords to meet Windows complexity rules. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/password-must-meet-complexity-requirements">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=50">CIS PDF p49</a></td>
+      <td>Enabled</td>
+      <td>Audit and updater: secedit System Access\PasswordComplexity</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.6)</td>
+      <td>Relax Minimum Password Length Limits</td>
+      <td>Allows the minimum password length to exceed 14 characters. This policy affects local accounts only. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=53">CIS PDF p52</a></td>
+      <td>Enabled (RelaxMinimumPasswordLengthLimits = DWORD 1)</td>
+      <td>Audit and updater: HKLM:\SYSTEM\CurrentControlSet\Control\SAM</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.1.7)</td>
+      <td>Reversible Password Encryption</td>
+      <td>Prevents storing passwords in a form that can be readily converted back to plaintext. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=55">CIS PDF p54</a></td>
+      <td>Disabled</td>
+      <td>Audit and updater: secedit System Access\ClearTextPassword</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.2.1)</td>
+      <td>Account Lockout Duration</td>
+      <td>Automatically unlocks a local account after repeated failed sign-ins. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-duration">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=58">CIS PDF p57</a></td>
+      <td>At least 15 minutes; the updater preserves any longer existing duration</td>
+      <td>Audit and updater: secedit System Access\LockoutDuration. Windows omits this value while account lockout is disabled (threshold 0, the Windows 10 default); the audit reports it as not set and the updater configures it.</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.2.2)</td>
+      <td>Account Lockout Threshold</td>
+      <td>Locks local accounts after repeated failed sign-ins to slow password guessing. A low threshold can cause accidental lockouts or denial of service; an account may be unavailable for 15 minutes after five failed attempts. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-threshold">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=60">CIS PDF p59</a></td>
+      <td>Between 1 and 5 invalid attempts; the updater preserves any already-compliant threshold</td>
+      <td>Audit and updater: secedit System Access\LockoutBadCount</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.2.3)</td>
+      <td>Allow Built-in Administrator Account Lockout</td>
+      <td>CIS marks this recommendation manual. On Windows updated with KB5020282 (October 11, 2022) or later, it makes the built-in Administrator account subject to the account lockout policy. The updater configures and audits the local security policy value. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=62">CIS PDF p61</a></td>
+      <td>Enabled when supported and the built-in Administrator account is in use</td>
+      <td>Audit and updater: secedit System Access\AllowAdministratorLockout. <a href="https://support.microsoft.com/en-us/topic/kb5020282-account-lockout-available-for-built-in-local-administrators-bce45c4d-f28d-43ad-b6fe-70156cb2dc00">Microsoft KB5020282</a>. If the value is absent from the exported policy (Windows builds without KB5020282), the audit fails with a message to install current updates; the updater reports the same and continues with the remaining remediations.</td>
+    </tr>
+    <tr>
+      <td>Account Policies (CIS 1.2.4)</td>
+      <td>Reset Account Lockout Counter</td>
+      <td>Defines how long Windows tracks failed attempts before resetting the counter. Must not exceed account lockout duration. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=64">CIS PDF p63</a></td>
+      <td>At least 15 minutes and no longer than lockout duration; the updater preserves any already-compliant interval</td>
+      <td>Audit and updater: secedit System Access\ResetLockoutCount. Windows omits this value while account lockout is disabled; the audit reports it as not set and the updater configures it.</td>
+    </tr>
+    <tr>
+      <td>Remote Access</td>
+      <td>Remote Desktop NLA</td>
+      <td>Authenticates users before establishing a full remote session, reducing exposure to unauthenticated RDP access and resource exhaustion. <a href="https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/enable-network-level-authentication">Microsoft documentation</a>.</td>
+      <td>Enforced (1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp. Audit-only: the Windows default already meets the baseline, so a failure means it was changed on purpose.</td>
+    </tr>
+    <tr>
+      <td>Remote Access</td>
+      <td>Remote Desktop Service</td>
+      <td>Disabling unused RDP prevents remote logon attempts and avoids exposing a remote access service unnecessarily. <a href="https://learn.microsoft.com/windows-server/remote/remote-desktop-services/clients/remote-desktop-allow-access">Microsoft documentation</a>.</td>
+      <td>Disabled (fDenyTSConnections = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\fDenyTSConnections; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+  <td>System Services</td>
+  <td>CIS Chapter 5 service controls</td>
+  <td>Stops and disables the listed services when installed; this reduces unnecessary service exposure but may disable features that depend on them. Services are not uninstalled, and existing SMB share definitions are retained. A running service that other services depend on is stopped together with its running dependents (their state is saved, so rollback starts them again), but only if every running dependent is itself on this list; otherwise the service is skipped with a message and stays reported by the audit, so the operator decides. CIS PDF: <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=281">Browser p280</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=283">MapsBroker p282</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=285">GameInputSvc p284</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=287">lfsvc p286</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=289">IISADMIN p288</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=291">irmon p290</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=293">lltdsvc p292</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=295">FTPSVC p294</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=297">MSiSCSI p296</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=299">sshd p298</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=301">PNRPsvc p300</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=303">p2psvc p302</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=305">p2pimsvc p304</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=307">PNRPAutoReg p306</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=311">wercplsupport p310</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=313">RasAuto p312</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=315">SessionEnv p314</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=317">TermService p316</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=319">UmRdpService p318</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=321">RpcLocator p320</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=323">RemoteRegistry p322</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=325">RemoteAccess p324</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=327">LanmanServer p326</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=329">simptcp p328</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=331">SNMP p330</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=333">sacsvr p332</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=335">SSDPSRV p334</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=337">upnphost p336</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=339">WMSvc p338</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=341">WerSvc p340</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=343">Wecsvc p342</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=345">WMPNetworkSvc p344</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=347">icssvc p346</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=351">PushToInstall p350</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=353">WinRM p352</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=355">W3SVC p354</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=357">XboxGipSvc p356</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=359">XblAuthManager p358</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=361">XblGameSave p360</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=363">XboxNetApiSvc p362</a>.</td>
+  <td>Stopped and disabled, or not installed</td>
+  <td>Browser, MapsBroker, GameInputSvc, lfsvc, IISADMIN, irmon, lltdsvc, FTPSVC, MSiSCSI, sshd, PNRPsvc, p2psvc, p2pimsvc, PNRPAutoReg, wercplsupport, RasAuto, SessionEnv, TermService, UmRdpService, RpcLocator, RemoteRegistry, RemoteAccess, LanmanServer, simptcp, SNMP, sacsvr, SSDPSRV, upnphost, WMSvc, WerSvc, Wecsvc, WMPNetworkSvc, icssvc, PushToInstall, WinRM, W3SVC, XboxGipSvc, XblAuthManager, XblGameSave, XboxNetApiSvc; configured and verified by Remediations.ps1</td>
+</tr>
+
+    <tr>
+      <td>Network Security</td>
+      <td>Windows Firewall Profiles</td>
+      <td>Blocks unsolicited inbound traffic by default on every network type, reducing network-based attack surface. <a href="https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/">Microsoft documentation</a>.</td>
+      <td>Enabled on Domain, Private, and Public; DefaultInboundAction = Block; DefaultOutboundAction = Allow</td>
+      <td>PowerShell: Get-NetFirewallProfile; configured and verified by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>Unidentified Network / Public Profile Protections</td>
+      <td>Treating unknown networks as Public and disabling discovery and sharing rules limits exposure to nearby untrusted devices. <a href="https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/">Microsoft documentation</a>.</td>
+      <td>Active unidentified networks use Public; Public profile is enabled with inbound default Block; Network Discovery / File and Printer Sharing inbound allow rules are disabled</td>
+      <td>PowerShell: Get-NetConnectionProfile; Get-NetFirewallProfile -Name Public; Get-NetFirewallRule; Set-NetFirewallProfile. Teredo-only Network Discovery rules (internal rule names ending in -Teredo, such as NETDIS-SSDPSrv-In-UDP-Teredo) are ignored while Teredo is disabled by policy, because they cannot receive traffic. Partly audit-only: Remediations.ps1 sets the firewall defaults and disables Teredo, but does not change network categories or Network Discovery / File and Printer Sharing rules, because that can break sharing on a home network.</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>SMBv1 Protocol Client/Server</td>
+      <td>Removes the obsolete SMBv1 protocol, which lacks modern protections and has been used in major wormable attacks. <a href="https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3">Microsoft documentation</a>.</td>
+      <td>Disabled / Uninstalled</td>
+      <td>PowerShell: Get-WindowsOptionalFeature. Audit-only: SMBv1 is absent by default on current Windows, so a failure means it was turned back on, possibly for an old device that needs it.</td>
+    </tr>
+    <tr>
+      <td>Legacy Components</td>
+      <td>Windows PowerShell 2.0</td>
+      <td>Removes an obsolete scripting engine that lacks current security improvements and may enable legacy malware techniques. <a href="https://learn.microsoft.com/powershell/scripting/whats-new/differences-from-windows-powershell">Microsoft documentation</a>.</td>
+      <td>Optional features absent or disabled</td>
+      <td>PowerShell: Get-WindowsOptionalFeature -Online; features MicrosoftWindowsPowerShellV2Root and MicrosoftWindowsPowerShellV2; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>LLMNR Name Resolution</td>
+      <td>Disables local multicast name resolution, reducing spoofing and credential-capture opportunities on shared networks. <a href="https://learn.microsoft.com/windows-server/networking/dns/manage/disable-link-local-multicast-name-resolution">Microsoft documentation</a>.</td>
+      <td>Disabled (EnableMulticast = 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>Teredo Tunneling</td>
+      <td>Teredo tunnels IPv6 over IPv4 UDP and can make the computer reachable from the internet over IPv6, bypassing the NAT protection of a home router. Microsoft no longer operates public Teredo servers. Disabling it may affect some legacy Xbox Live party chat and peer-to-peer gaming features. <a href="https://learn.microsoft.com/windows-server/networking/technologies/ipv6/ipv6-transition-technologies">Microsoft documentation</a>.</td>
+      <td>Disabled by policy ("Set Teredo State" = Disabled State; Teredo_State = REG_SZ Disabled)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition\Teredo_State; configured by Remediations.ps1 (with rollback). Takes effect after the IP Helper service or Windows restarts. Verify the effective state with: netsh interface teredo show state</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>TLS/SSL Protocol Versions (Schannel)</td>
+      <td>Allows only TLS 1.2 and newer in Schannel, the TLS library used by Windows, .NET, Remote Desktop and most Windows services. SSL 2.0, SSL 3.0, TLS 1.0 and TLS 1.1 have known weaknesses (for example POODLE and BEAST) and are deprecated. Connections to old devices or servers that support only TLS 1.0/1.1 (older NAS or printer web pages, old Remote Desktop or SQL servers) will fail. Applications with their own TLS library (Firefox, Chrome, OpenSSL-based tools) are not affected. Older .NET Framework 3.5 applications may additionally need SystemDefaultTlsVersions to use TLS 1.2. On Windows 11 (build 22000 and later) TLS 1.3 is explicitly enabled for Client and Server, so it cannot stay silently disabled. On Windows 10 TLS 1.3 is not configured, because Windows 10 does not support it as a client; there the check only fails if TLS 1.3 was explicitly disabled. <a href="https://learn.microsoft.com/windows-server/security/tls/tls-registry-settings">Microsoft TLS registry settings</a>. <a href="https://learn.microsoft.com/windows/win32/secauthn/protocols-in-tls-ssl--schannel-ssp-">Microsoft Schannel protocol support</a>. <a href="https://learn.microsoft.com/security/engineering/solving-the-tls-1-0-problem">Microsoft: Solving the TLS 1.0 problem</a>.</td>
+      <td>SSL 2.0, SSL 3.0, TLS 1.0, TLS 1.1: Client and Server Enabled = DWORD 0, DisabledByDefault = DWORD 1. TLS 1.2: Client and Server Enabled = DWORD 1, DisabledByDefault = DWORD 0. TLS 1.3 on Windows 11: Client and Server Enabled = DWORD 1, DisabledByDefault = DWORD 0. TLS 1.3 on Windows 10: not explicitly disabled</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\&lt;protocol&gt;\Client and \Server; SSL 2.0 through TLS 1.2, and TLS 1.3 on Windows 11, configured by Remediations.ps1 (with rollback); TLS 1.3 on Windows 10 is audit-only (not configured by Remediations.ps1). Takes effect after Windows restarts</td>
+    </tr>
+    <tr>
+      <td>Legacy Authentication</td>
+      <td>CIS 2.3.11.6 LAN Manager Authentication Level and Legacy Authentication Hardening</td>
+      <td>Uses NTLMv2, avoids storing LM hashes, and disables WDigest credential caching to reduce credential theft and relay risks. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=233">CIS PDF p232</a></td>
+      <td>LmCompatibilityLevel = 5; NTLMMinClientSec and NTLMMinServerSec = 537395200; NoLMHash = 1; WDigest UseLogonCredential = 0</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.1)</td>
+      <td>Allow Local System to Use Computer Identity for NTLM</td>
+      <td>Allows Local System services that fall back to NTLM to authenticate as the computer account; some legacy authentication requests may fail. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=223">CIS PDF p222</a></td>
+      <td>Enabled (UseMachineId = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.2)</td>
+      <td>Allow LocalSystem NULL Session Fallback</td>
+      <td>Disables unauthenticated NULL-session fallback for NTLM when used by LocalSystem; applications relying on this fallback may fail. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=225">CIS PDF p224</a></td>
+      <td>Disabled (AllowNullSessionFallback = DWORD 0)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.3)</td>
+      <td>PKU2U Online Identity Authentication</td>
+      <td>Disables peer-to-peer PKU2U authentication using online identities. Hybrid-joined to hybrid-joined Remote Desktop connections may be affected. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=227">CIS PDF p226</a></td>
+      <td>Disabled (AllowOnlineID = DWORD 0)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\pku2u; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.4)</td>
+      <td>Kerberos Encryption Types</td>
+      <td>Restricts Kerberos to AES128, AES256, and future encryption types. Older systems, services, or applications requiring RC4 may fail authentication. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=229">CIS PDF p228</a></td>
+      <td>AES128_HMAC_SHA1, AES256_HMAC_SHA1, and future encryption types (DWORD 2147483640)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.5)</td>
+      <td>Force Logoff When Logon Hours Expire</td>
+      <td>Disconnects SMB sessions when a local account's allowed logon hours expire; enable the matching Microsoft network server logoff policy where applicable. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=231">CIS PDF p230</a></td>
+      <td>Enabled (ForceLogoffWhenHourExpire = 1)</td>
+      <td>Audit and remediation: local security policy (secedit System Access)</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>mDNS and WPAD</td>
+      <td>Disabling automatic local name resolution and proxy discovery reduces spoofing opportunities that could redirect traffic or capture credentials.</td>
+      <td>mDNS disabled (EnableMDNS = 0); WPAD disabled (WpadOverride = 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters; HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Wpad</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.9.1)</td>
+      <td>Link-Layer Topology Discovery Mapper I/O Driver</td>
+      <td>Disables LLTD Mapper I/O, which supports network topology mapping. Standard network connectivity is unaffected. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=564">CIS PDF p563</a></td>
+      <td>Disabled (AllowLLTDIOOnDomain, AllowLLTDIOOnPublicNet, EnableLLTDIO, and ProhibitLLTDIOOnPrivateNet = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\LLTD</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.9.2)</td>
+      <td>Link-Layer Topology Discovery Responder Driver</td>
+      <td>Disables the LLTD responder, so the PC does not respond to network topology discovery queries. Standard network connectivity is unaffected. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=566">CIS PDF p565</a></td>
+      <td>Disabled (AllowRspndrOnDomain, AllowRspndrOnPublicNet, EnableRspndr, and ProhibitRspndrOnPrivateNet = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\LLTD</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.10.1 heading; recommendation 18.6.10.2)</td>
+      <td>Turn Off Microsoft Peer-to-Peer Networking Services</td>
+      <td>The benchmark's 18.6.10.1 is a Peer Name Resolution Protocol subsection heading; the automated recommendation beneath it is 18.6.10.2. This policy disables Microsoft peer-to-peer networking. The Peer Name Resolution Protocol service is also disabled by the separate service baseline. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=570">CIS PDF p569</a></td>
+      <td>Enabled (HKLM:\SOFTWARE\Policies\Microsoft\Peernet\Disabled = DWORD 1)</td>
+      <td>Registry policy; configured and audited by Remediations.ps1 and Audit.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.14.1)</td>
+      <td>Hardened UNC Paths</td>
+      <td>Requires authentication, integrity, and privacy for domain NETLOGON and SYSVOL paths. These requirements apply when those paths are accessed and do not alter ordinary standalone file sharing. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=580">CIS PDF p579</a></td>
+      <td>\\*\NETLOGON and \\*\SYSVOL: RequireMutualAuthentication=1, RequireIntegrity=1, RequirePrivacy=1 (REG_SZ)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.20.1)</td>
+      <td>Windows Connect Now Configuration</td>
+      <td>Disables WCN configuration and device setup over UPnP, Wi-Fi, WPD, and USB media. Normal Wi-Fi connectivity remains available. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=589">CIS PDF p588</a></td>
+      <td>Disabled (EnableRegistrars, DisableUPnPRegistrar, DisableInBand802DOT11Registrar, DisableFlashConfigRegistrar, and DisableWPDRegistrar = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\Registrars</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.20.2)</td>
+      <td>Windows Connect Now Wizards</td>
+      <td>Prohibits access to the Windows Connect Now setup wizards. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=591">CIS PDF p590</a></td>
+      <td>Enabled (DisableWcnUi = DWORD 1)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WCN\UI</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 18.6.23.2.1)</td>
+      <td>Automatic Connections to Suggested or Shared Hotspots</td>
+      <td>Disables automatic Wi-Fi Sense connections to suggested open hotspots, networks shared by contacts, and paid hotspots. Users can still connect to Wi-Fi networks manually. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=598">CIS PDF p597</a></td>
+      <td>Disabled (AutoConnectAllowedOEM = DWORD 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\WcmSvc\wifinetworkmanager\config</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.3)</td>
+      <td>Do Not Allow Anonymous Enumeration of SAM Accounts and Shares</td>
+      <td>Prevents unauthenticated network clients from enumerating local accounts and shares. This implementation uses RestrictAnonymous = 2, which also blocks anonymous account enumeration. <a href="https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/network-access-do-not-allow-anonymous-enumeration-of-sam-accounts-and-shares">Microsoft documentation</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=200">CIS PDF p199</a></td>
+      <td>RestrictAnonymous = 2</td>
+      <td>CIS 2.3.10.3; Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.1)</td>
+      <td>Allow Anonymous SID/Name Translation</td>
+      <td>Prevents anonymous users from translating account SIDs to names or names to SIDs, reducing account-name discovery. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=196">CIS PDF p195</a></td>
+      <td>Disabled (LSAAnonymousNameLookup = 0)</td>
+      <td>Audit and remediation: local security policy (secedit System Access)</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.2)</td>
+      <td>Do Not Allow Anonymous Enumeration of SAM Accounts</td>
+      <td>Blocks anonymous enumeration of SAM account names. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=198">CIS PDF p197</a></td>
+      <td>Enabled (RestrictAnonymousSAM = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.4)</td>
+      <td>Do Not Store Passwords and Credentials for Network Authentication</td>
+      <td>Prevents Credential Manager from saving network credentials. Users may need to re-enter credentials for network resources and scheduled tasks using alternate credentials; restart required for changes to take effect. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=202">CIS PDF p201</a></td>
+      <td>Enabled (DisableDomainCreds = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.5)</td>
+      <td>Let Everyone Permissions Apply to Anonymous Users</td>
+      <td>Excludes anonymous users from permissions granted to the Everyone group. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=204">CIS PDF p203</a></td>
+      <td>Disabled (EveryoneIncludesAnonymous = DWORD 0)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.6)</td>
+      <td>Named Pipes Accessible Anonymously</td>
+      <td>Removes all named pipes from the anonymous-access list. Legacy applications relying on unauthenticated named-pipe access may stop working; this does not disable printing. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=206">CIS PDF p205</a></td>
+      <td>None (NullSessionPipes value absent or empty)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.7)</td>
+      <td>Remotely Accessible Registry Paths</td>
+      <td>Restricts remote registry access to the benchmark's required paths. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=208">CIS PDF p207</a></td>
+      <td>System\CurrentControlSet\Control\ProductOptions; System\CurrentControlSet\Control\Server Applications; Software\Microsoft\Windows NT\CurrentVersion</td>
+      <td>REG_MULTI_SZ: HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\Winreg\AllowedExactPaths\Machine</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.8)</td>
+      <td>Remotely Accessible Registry Paths and Sub-Paths</td>
+      <td>Preserves the benchmark's required remote registry paths and sub-paths. Remote Registry remains disabled by the separate service baseline. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=210">CIS PDF p209</a></td>
+      <td>Print\Printers; Services\Eventlog; OLAP Server; Windows NT\CurrentVersion\Print and \Windows; ContentIndex; Terminal Server and its UserConfig and DefaultUserConfiguration; Perflib; SysmonLog (full paths configured by Remediations.ps1)</td>
+      <td>REG_MULTI_SZ: HKLM:\SYSTEM\CurrentControlSet\Control\SecurePipeServers\Winreg\AllowedPaths\Machine</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.9)</td>
+      <td>Restrict Anonymous Access to Named Pipes and Shares</td>
+      <td>Restricts null-session access to explicitly listed pipes and shares. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=214">CIS PDF p213</a></td>
+      <td>Enabled (RestrictNullSessAccess = DWORD 1)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.10)</td>
+      <td>Restrict Clients Allowed to Make Remote Calls to SAM</td>
+      <td>Restricts remote SAM RPC access to Administrators. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=216">CIS PDF p215</a></td>
+      <td>Administrators: Remote Access: Allow (restrictremotesam REG_SZ)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.11)</td>
+      <td>Shares Accessible Anonymously</td>
+      <td>Removes all shares from the anonymous-access list. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=218">CIS PDF p217</a></td>
+      <td>None (NullSessionShares value absent or empty)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Access (CIS 2.3.10.12)</td>
+      <td>Sharing and Security Model for Local Accounts</td>
+      <td>Uses each local user's own credentials for network logons instead of mapping local users to Guest. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=220">CIS PDF p219</a></td>
+      <td>Classic (ForceGuest = DWORD 0)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>SMB Signing (Server)</td>
+      <td>Requires message signing on SMB server connections to help detect tampering and reduce relay attacks. <a href="https://learn.microsoft.com/windows-server/storage/file-server/smb-signing">Microsoft documentation</a>.</td>
+      <td>Required (CIS 2.3.9.2, Level 1), also while LanmanServer is disabled</td>
+      <td>PowerShell: Get-SmbServerConfiguration while LanmanServer is enabled; registry HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters\RequireSecuritySignature = DWORD 1 while it is disabled (the SMB cmdlets fail then). Set by Remediations.ps1 in both cases, so the requirement is already in place if the service is ever enabled again.</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>SMB Signing (Client)</td>
+      <td>Requires message signing on SMB client connections to help detect tampering and reduce relay attacks. <a href="https://learn.microsoft.com/windows-server/storage/file-server/smb-signing">Microsoft documentation</a>.</td>
+      <td>Required</td>
+      <td>PowerShell: Get-SmbClientConfiguration</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.7)</td>
+      <td>LDAP Client Encryption Requirements</td>
+      <td>Negotiates LDAP sealing to protect LDAP client traffic from interception or modification. LDAP servers that require signing/sealing should be tested for compatibility. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=236">CIS PDF p235</a></td>
+      <td>Negotiate sealing or require sealing (LDAPClientConfidentiality = DWORD 1 or 2)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LDAP; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.8)</td>
+      <td>LDAP Client Signing Requirements</td>
+      <td>Negotiates signing for LDAP client traffic to help prevent tampering. LDAP servers that require signing should be tested for compatibility. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=238">CIS PDF p237</a></td>
+      <td>Negotiate signing or require signing (LDAPClientIntegrity = DWORD 1 or 2)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LDAP; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.9)</td>
+      <td>Minimum NTLM SSP Client Session Security</td>
+      <td>Requires NTLMv2 session security and 128-bit encryption for NTLM SSP client connections; older servers may not negotiate successfully. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=240">CIS PDF p239</a></td>
+      <td>NTLMMinClientSec = DWORD 537395200</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.10)</td>
+      <td>Minimum NTLM SSP Server Session Security</td>
+      <td>Requires NTLMv2 session security and 128-bit encryption for NTLM SSP server connections; older clients may not negotiate successfully. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=242">CIS PDF p241</a></td>
+      <td>NTLMMinServerSec = DWORD 537395200</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.11)</td>
+      <td>Audit Incoming NTLM Traffic</td>
+      <td>Records incoming NTLM authentication activity in the NTLM operational event log. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=244">CIS PDF p243</a></td>
+      <td>Audit all accounts (AuditReceivingNTLMTraffic = DWORD 2)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security (CIS 2.3.11.12)</td>
+      <td>Audit Outgoing NTLM Traffic</td>
+      <td>Audits all outgoing NTLM traffic for visibility into legacy authentication dependencies. Deny all also meets the benchmark but may break applications that require NTLM. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=246">CIS PDF p245</a></td>
+      <td>Audit all (RestrictSendingNTLMTraffic = DWORD 1) or deny all (DWORD 2)</td>
+      <td>Registry: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0; configured by Remediations.ps1</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>DNS over HTTPS (DoH)</td>
+      <td>Encrypts DNS queries between the device and its resolver, reducing passive observation or alteration on the network path. <a href="https://learn.microsoft.com/windows-server/networking/dns/doh-client-support">Microsoft documentation</a>.</td>
+      <td>Enabled</td>
+      <td>PowerShell: Get-DnsClientDohServerAddress. Audit-only: Remediations.ps1 does not configure DNS over HTTPS, because that means choosing a DNS provider and changing the DNS servers of the network adapters, which can break name resolution on some networks; turn it on in Settings &gt; Network &amp; internet &gt; Wi-Fi or Ethernet &gt; DNS server assignment &gt; Edit. Skipped (reported as [SKIP]) on Windows versions without this cmdlet, such as Windows 10.</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>NetBIOS over TCP/IP</td>
+      <td>Disabling legacy NetBIOS reduces unnecessary name-service traffic and exposure to spoofing or information disclosure on local networks.</td>
+      <td>Disabled</td>
+      <td>PowerShell: Get-WmiObject Win32_NetworkAdapterConfiguration</td>
+    </tr>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <tr>
+      <td>Auditing &amp; Logs</td>
+      <td>Security Event Log Size</td>
+      <td>A larger Security log retains more audit events before rollover, improving investigation and detection of suspicious activity. <a href="https://learn.microsoft.com/windows-server/administration/windows-commands/wevtutil">Microsoft documentation</a>.</td>
+      <td>&ge; 192 MB (196,608 KB), as in CIS 18.10.26.2.2; Remediations.ps1 increases smaller sizes to 192 MB and never lowers a larger size</td>
+      <td>PowerShell: Get-WinEvent -ListLog Security (the size the log actually uses; requires elevation). Configured with wevtutil by Remediations.ps1 (with rollback). The matching CIS policy value is checked and set separately (see CIS 18.10.26.2.2 below).</td>
+    </tr>
+    <tr>
+      <td>Auditing &amp; Logs</td>
+      <td>Application Event Log Size</td>
+      <td>A larger Application log keeps application errors and crash reports longer, which helps when investigating problems or attacks. <a href="https://learn.microsoft.com/windows-server/administration/windows-commands/wevtutil">Microsoft documentation</a>.</td>
+      <td>&ge; 32 MB (32,768 KB), as in CIS 18.10.26.1.2; Remediations.ps1 increases smaller sizes to 32 MB and never lowers a larger size</td>
+      <td>PowerShell: Get-WinEvent -ListLog Application (the size the log actually uses). Configured with wevtutil by Remediations.ps1 (with rollback). The matching CIS policy value is checked and set separately (see CIS 18.10.26.1.2 below).</td>
+    </tr>
+    <tr>
+      <td>Auditing &amp; Logs</td>
+      <td>Setup Event Log Size</td>
+      <td>A larger Setup log keeps the history of Windows updates and feature installations longer. Windows default: about 1 MB. <a href="https://learn.microsoft.com/windows-server/administration/windows-commands/wevtutil">Microsoft documentation</a>.</td>
+      <td>&ge; 32 MB (32,768 KB), as in CIS 18.10.26.3.2; Remediations.ps1 increases smaller sizes to 32 MB and never lowers a larger size</td>
+      <td>PowerShell: Get-WinEvent -ListLog Setup (the size the log actually uses). Configured with wevtutil by Remediations.ps1 (with rollback). The matching CIS policy value is checked and set separately (see CIS 18.10.26.3.2 below).</td>
+    </tr>
+    <tr>
+      <td>Auditing &amp; Logs</td>
+      <td>System Event Log Size</td>
+      <td>A larger System log keeps service, driver and startup events longer, which helps when investigating problems or attacks. <a href="https://learn.microsoft.com/windows-server/administration/windows-commands/wevtutil">Microsoft documentation</a>.</td>
+      <td>&ge; 32 MB (32,768 KB), as in CIS 18.10.26.4.2; Remediations.ps1 increases smaller sizes to 32 MB and never lowers a larger size</td>
+      <td>PowerShell: Get-WinEvent -ListLog System (the size the log actually uses). Configured with wevtutil by Remediations.ps1 (with rollback). The matching CIS policy value is checked and set separately (see CIS 18.10.26.4.2 below).</td>
+    </tr>
+    <tr>
+      <td>Auditing &amp; Logs</td>
+      <td>Advanced Audit Policy (Logon, Logoff, Special Logon, Sensitive Privilege Use)</td>
+      <td>Records sign-ins, sign-outs, sign-ins with administrator-level privileges and use of sensitive privileges in the Security log, so suspicious account activity can be investigated. <a href="https://learn.microsoft.com/windows-server/administration/windows-commands/auditpol">Microsoft documentation (auditpol)</a>.</td>
+      <td>Logon: Success and Failure. Logoff: Success. Special Logon: Success. Sensitive Privilege Use: Success and Failure</td>
+      <td>Not audited: Audit.ps1 does not check audit and logging settings. Configured by Remediations.ps1 with auditpol /set (with rollback to the original subcategory settings). To check manually: auditpol /get /category:*</td>
+    </tr>
+    <tr>
+      <td>Network Security</td>
+      <td>Administrative Shares (C$, ADMIN$)</td>
+      <td>Stops Windows from automatically creating the hidden administrative shares, which attackers with stolen administrator credentials use to move between computers. Remote administration tools that rely on these shares stop working. <a href="https://learn.microsoft.com/troubleshoot/windows-server/networking/remove-administrative-shares">Microsoft documentation</a>.</td>
+      <td>AutoShareServer = DWORD 0 and AutoShareWks = DWORD 0</td>
+      <td>Not audited: Audit.ps1 has no check for this setting. Registry: HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters; configured by Remediations.ps1 (with rollback). Takes effect after Windows restarts</td>
+    </tr>
+    <tr>
+      <td>Update Hygiene</td>
+      <td>Automatic Updates Policy</td>
+      <td>Allows Windows security updates to install, ensuring known vulnerabilities are patched promptly. <a href="https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb">Microsoft documentation</a>.</td>
+      <td>Allowed (NoAutoUpdate = 0)</td>
+      <td>Registry: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU. Audit-only: Windows has no NoAutoUpdate policy by default, so a failure means a policy deliberately turned automatic updates off.</td>
+    </tr>
+    <tr>
+      <td>Update Hygiene</td>
+      <td>Windows Update Pause Duration</td>
+      <td>Limits prolonged update pauses so the device continues receiving security fixes and vulnerability remediation. <a href="https://learn.microsoft.com/windows/deployment/update/waas-configure-wufb">Microsoft documentation</a>.</td>
+      <td>No active quality or feature update pause longer than 2 days; a shorter pause is permitted</td>
+      <td>Registry: HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings and HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate pause start/expiry values; audit-only, no automatic unpause</td>
+    </tr>
+    <tr>
+      <td>Disk Encryption</td>
+      <td>BitLocker OS Drive</td>
+      <td>Encrypts the operating-system volume, protecting data if the device or drive is lost or accessed offline. <a href="https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/">Microsoft documentation</a>.</td>
+      <td>Fully Encrypted (1)</td>
+      <td>PowerShell: Get-BitLockerVolume -MountPoint "$env:SystemDrive". Audit-only: turning on BitLocker needs a TPM (or a startup password or USB key) and a safe place for the recovery key.</td>
+    </tr>
+    <tr>
+      <td>Disk Encryption</td>
+      <td>BitLocker Recovery Key Present</td>
+      <td>Ensures a recovery protector exists so encrypted data can be recovered after a legitimate lockout or hardware change; store the key securely. <a href="https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/recovery-overview">Microsoft documentation</a>.</td>
+      <td>Yes</td>
+      <td>PowerShell: Get-BitLockerVolume. Audit-only: storing the recovery key safely is a manual step.</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<h2>ADDITIONAL CIS MICROSOFT WINDOWS 11 STAND-ALONE BENCHMARK v5.0.0 CHECKS</h2>
+<p>These Level 1 automated checks are included in Audit.ps1. Remediations.ps1 configures the registry, user-rights, and firewall settings where indicated; checks marked audit-only are not changed automatically. User-right checks omit audit/logging recommendations and Level 2 items; Bluetooth, Print Spooler, and Push Notifications remain enabled as required for this computer. Restart may be required for virtualization-based security settings to take effect.</p>
+<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; font-family: sans-serif; width: 100%; table-layout: fixed; overflow-wrap: anywhere;">
+  <thead>
+    <tr style="background-color: #f2f2f2;">
+      <th>CIS Recommendation</th>
+      <th>Configuration Setting</th>
+      <th>Expected Secure State</th>
+      <th>Verification and Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>2.2.1</td>
+      <td>Access Credential Manager as a trusted caller</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment; empty export entry is treated as no assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=68">CIS PDF p67</a></td>
+    </tr>
+    <tr>
+      <td>2.2.2</td>
+      <td>Access this computer from the network</td>
+      <td>Administrators; Remote Desktop Users</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=70">CIS PDF p69</a></td>
+    </tr>
+    <tr>
+      <td>2.2.3</td>
+      <td>Act as part of the operating system</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=73">CIS PDF p72</a></td>
+    </tr>
+    <tr>
+      <td>2.2.4</td>
+      <td>Adjust memory quotas for a process</td>
+      <td>Administrators; LOCAL SERVICE; NETWORK SERVICE</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=75">CIS PDF p74</a></td>
+    </tr>
+    <tr>
+      <td>2.2.5</td>
+      <td>Allow log on locally</td>
+      <td>Administrators; Users</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=77">CIS PDF p76</a></td>
+    </tr>
+    <tr>
+      <td>2.2.6</td>
+      <td>Allow log on through Remote Desktop Services</td>
+      <td>Administrators; Remote Desktop Users</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=79">CIS PDF p78</a></td>
+    </tr>
+    <tr>
+      <td>2.2.7</td>
+      <td>Back up files and directories</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=81">CIS PDF p80</a></td>
+    </tr>
+    <tr>
+      <td>2.2.8</td>
+      <td>Change the system time</td>
+      <td>Administrators; LOCAL SERVICE</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=83">CIS PDF p82</a></td>
+    </tr>
+    <tr>
+      <td>2.2.9</td>
+      <td>Create a pagefile</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=86">CIS PDF p85</a></td>
+    </tr>
+    <tr>
+      <td>2.2.10</td>
+      <td>Create a token object</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=88">CIS PDF p87</a></td>
+    </tr>
+    <tr>
+      <td>2.2.11</td>
+      <td>Create global objects</td>
+      <td>Administrators; LOCAL SERVICE; NETWORK SERVICE; SERVICE</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=90">CIS PDF p89</a></td>
+    </tr>
+    <tr>
+      <td>2.2.12</td>
+      <td>Create permanent shared objects</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=92">CIS PDF p91</a></td>
+    </tr>
+    <tr>
+      <td>2.2.13</td>
+      <td>Create symbolic links</td>
+      <td>Administrators; and, when Hyper-V is installed, NT VIRTUAL MACHINE\Virtual Machines</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. Hyper-V counts as installed when the Hyper-V Virtual Machine Management service (vmms) exists; Virtual Machine Platform alone (used by WSL 2) does not count. With Hyper-V, NT VIRTUAL MACHINE\Virtual Machines (S-1-5-83-0) is required, because without it new virtual machines cannot be created. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=94">CIS PDF p93</a></td>
+    </tr>
+    <tr>
+      <td>2.2.14</td>
+      <td>Debug programs</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=96">CIS PDF p95</a></td>
+    </tr>
+    <tr>
+      <td>2.2.15</td>
+      <td>Deny access to this computer from the network</td>
+      <td>Guests must be included</td>
+      <td>Additional deny entries are retained. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=98">CIS PDF p97</a></td>
+    </tr>
+    <tr>
+      <td>2.2.16</td>
+      <td>Deny log on as a batch job</td>
+      <td>Guests must be included</td>
+      <td>Additional deny entries are retained. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=100">CIS PDF p99</a></td>
+    </tr>
+    <tr>
+      <td>2.2.17</td>
+      <td>Deny log on as a service</td>
+      <td>Guests must be included</td>
+      <td>Additional deny entries are retained. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=102">CIS PDF p101</a></td>
+    </tr>
+    <tr>
+      <td>2.2.18</td>
+      <td>Deny log on locally</td>
+      <td>Guests must be included</td>
+      <td>Additional deny entries are retained. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=104">CIS PDF p103</a></td>
+    </tr>
+    <tr>
+      <td>2.2.19</td>
+      <td>Deny log on through Remote Desktop Services</td>
+      <td>Guests must be included</td>
+      <td>Additional deny entries are retained. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=106">CIS PDF p105</a></td>
+    </tr>
+    <tr>
+      <td>2.2.20</td>
+      <td>Enable computer and user accounts to be trusted for delegation</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=108">CIS PDF p107</a></td>
+    </tr>
+    <tr>
+      <td>2.2.21</td>
+      <td>Force shutdown from a remote system</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=110">CIS PDF p109</a></td>
+    </tr>
+    <tr>
+      <td>2.2.23</td>
+      <td>Impersonate a client after authentication</td>
+      <td>Administrators; LOCAL SERVICE; NETWORK SERVICE; SERVICE; Restricted Services\PrintSpoolerService</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. Restricted Services\PrintSpoolerService exists only on Windows 11 22H2 and later; where it does not exist (for example Windows 10), it is omitted from the expected and applied assignment. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=114">CIS PDF p113</a></td>
+    </tr>
+    <tr>
+      <td>2.2.24</td>
+      <td>Increase scheduling priority</td>
+      <td>Administrators; Window Manager\Window Manager Group</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=116">CIS PDF p115</a></td>
+    </tr>
+    <tr>
+      <td>2.2.25</td>
+      <td>Load and unload device drivers</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=118">CIS PDF p117</a></td>
+    </tr>
+    <tr>
+      <td>2.2.26</td>
+      <td>Lock pages in memory</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=120">CIS PDF p119</a></td>
+    </tr>
+    <tr>
+      <td>2.2.30</td>
+      <td>Modify an object label</td>
+      <td>No accounts assigned</td>
+      <td>User Rights Assignment. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=128">CIS PDF p127</a></td>
+    </tr>
+    <tr>
+      <td>2.2.31</td>
+      <td>Modify firmware environment values</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=130">CIS PDF p129</a></td>
+    </tr>
+    <tr>
+      <td>2.2.32</td>
+      <td>Perform volume maintenance tasks</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=132">CIS PDF p131</a></td>
+    </tr>
+    <tr>
+      <td>2.2.33</td>
+      <td>Profile single process</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=134">CIS PDF p133</a></td>
+    </tr>
+    <tr>
+      <td>2.2.34</td>
+      <td>Profile system performance</td>
+      <td>Administrators; NT SERVICE\WdiServiceHost</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=136">CIS PDF p135</a></td>
+    </tr>
+    <tr>
+      <td>2.2.35</td>
+      <td>Replace a process level token</td>
+      <td>LOCAL SERVICE; NETWORK SERVICE</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=138">CIS PDF p137</a></td>
+    </tr>
+    <tr>
+      <td>2.2.36</td>
+      <td>Restore files and directories</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=140">CIS PDF p139</a></td>
+    </tr>
+    <tr>
+      <td>2.2.37</td>
+      <td>Shut down the system</td>
+      <td>Administrators; Users</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=142">CIS PDF p141</a></td>
+    </tr>
+    <tr>
+      <td>2.2.38</td>
+      <td>Take ownership of files or other objects</td>
+      <td>Administrators</td>
+      <td>Exact assignment required. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=144">CIS PDF p143</a></td>
+    </tr>
+    <tr>
+      <td>2.3.1.2</td>
+      <td>Accounts: limit local account use of blank passwords to console logon</td>
+      <td>Enabled (LimitBlankPasswordUse = DWORD 1)</td>
+      <td>Audit-only. Registry: HKLM\SYSTEM\CurrentControlSet\Control\Lsa\LimitBlankPasswordUse. Audit: Audit.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=150">CIS PDF p149</a></td>
+    </tr>
+    <tr>
+      <td>2.3.7.2</td>
+      <td>Interactive logon: do not display last signed-in user</td>
+      <td>Enabled (DontDisplayLastUserName = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=169">CIS PDF p168</a></td>
+    </tr>
+    <tr>
+      <td>2.3.7.6</td>
+      <td>Interactive logon: prompt user to change password before expiration</td>
+      <td>PasswordExpiryWarning between 5 and 14 days</td>
+      <td>Audit-only. Registry: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\PasswordExpiryWarning. Audit: Audit.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=177">CIS PDF p176</a></td>
+    </tr>
+    <tr>
+      <td>2.3.7.7</td>
+      <td>Interactive logon: smart card removal behavior</td>
+      <td>Lock, Force Logoff, or Disconnect (ScRemoveOption = 1, 2, or 3)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=179">CIS PDF p178</a></td>
+    </tr>
+    <tr>
+      <td>2.3.8.2</td>
+      <td>Microsoft network client: send unencrypted password to third-party SMB servers</td>
+      <td>Disabled (EnablePlainTextPassword = DWORD 0)</td>
+      <td>Audit-only. Registry: HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters\EnablePlainTextPassword. Audit: Audit.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=184">CIS PDF p183</a></td>
+    </tr>
+    <tr>
+      <td>2.3.9.1</td>
+      <td>Microsoft network server: amount of idle time required before suspending session</td>
+      <td>1?15 minutes (AutoDisconnect = DWORD 1?15)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters\AutoDisconnect. Audit: Audit.ps1; remediation: Remediations.ps1 sets 15 minutes. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=187">CIS PDF p186</a></td>
+    </tr>
+    <tr>
+      <td>2.3.9.3</td>
+      <td>Microsoft network server: disconnect clients when logon hours expire</td>
+      <td>Enabled (EnableForcedLogOff = DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters\EnableForcedLogOff. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback).<a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=191">CIS PDF p190</a></td>
+    </tr>
+    <tr>
+      <td>2.3.9.4</td>
+      <td>Microsoft network server: server SPN target name validation level</td>
+      <td>Accept if provided or required (SmbServerNameHardeningLevel = DWORD 1 or 2)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=193">CIS PDF p192</a></td>
+    </tr>
+    <tr>
+      <td>2.3.15.1</td>
+      <td>System objects: require case insensitivity for non-Windows subsystems</td>
+      <td>Enabled (ObCaseInsensitive = DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel\ObCaseInsensitive. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Object names are compared without regard to case for all subsystems. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=253">CIS PDF p252</a></td>
+    </tr>
+    <tr>
+      <td>2.3.15.2</td>
+      <td>System objects: strengthen default permissions of internal system objects (for example symbolic links)</td>
+      <td>Enabled (ProtectionMode = DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\ProtectionMode. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Users who are not administrators can read shared system objects but not change objects they did not create. This is the Windows default. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=255">CIS PDF p254</a></td>
+    </tr>
+    <tr>
+      <td>2.3.17.1</td>
+      <td>User Account Control: Admin Approval Mode for the Built-in Administrator account</td>
+      <td>Enabled (FilterAdministratorToken = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\FilterAdministratorToken. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=259">CIS PDF p258</a></td>
+    </tr>
+    <tr>
+      <td>2.3.17.3</td>
+      <td>User Account Control: Behavior of the elevation prompt for standard users</td>
+      <td>Automatically deny elevation requests (ConsentPromptBehaviorUser = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\ConsentPromptBehaviorUser. Standard users no longer get a prompt for administrator credentials; sign in with an administrator account for administrative tasks. Also in the Microsoft security baseline for Windows 11 26H2. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=263">CIS PDF p262</a></td>
+    </tr>
+    <tr>
+      <td>2.3.17.4</td>
+      <td>User Account Control: Detect application installations and prompt for elevation</td>
+      <td>Enabled (EnableInstallerDetection = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableInstallerDetection. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=265">CIS PDF p264</a></td>
+    </tr>
+    <tr>
+      <td>2.3.17.5</td>
+      <td>User Account Control: Only elevate UIAccess applications that are installed in secure locations</td>
+      <td>Enabled (EnableSecureUIAPaths = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableSecureUIAPaths. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=267">CIS PDF p266</a></td>
+    </tr>
+    <tr>
+      <td>2.3.17.8</td>
+      <td>User Account Control: Virtualize file and registry write failures to per-user locations</td>
+      <td>Enabled (EnableVirtualization = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableVirtualization. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=273">CIS PDF p272</a></td>
+    </tr>
+    <tr>
+      <td>18.1.1.1</td>
+      <td>Prevent enabling lock screen camera</td>
+      <td>Enabled (NoLockScreenCamera = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization\NoLockScreenCamera. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The camera cannot be started from the lock screen, and the toggle in Settings is no longer available. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=472">CIS PDF p471</a></td>
+    </tr>
+    <tr>
+      <td>18.1.1.2</td>
+      <td>Prevent enabling lock screen slide show</td>
+      <td>Enabled (NoLockScreenSlideshow = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization\NoLockScreenSlideshow. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The lock screen slide show cannot be used. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=474">CIS PDF p473</a></td>
+    </tr>
+    <tr>
+      <td>18.1.2.2</td>
+      <td>Allow users to enable online speech recognition services</td>
+      <td>Disabled (AllowInputPersonalization = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\InputPersonalization\AllowInputPersonalization. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Users cannot turn on online speech recognition, which sends voice data to Microsoft. Features that need the cloud service, such as voice typing, stop working. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=478">CIS PDF p477</a></td>
+    </tr>
+    <tr>
+      <td>18.4.3</td>
+      <td>Enable certificate padding check</td>
+      <td>Enabled (EnableCertPaddingCheck = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Cryptography\Wintrust\Config\EnableCertPaddingCheck; HKLM\SOFTWARE\Wow6432Node\Microsoft\Cryptography\Wintrust\Config\EnableCertPaddingCheck. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows rejects certificate signatures with malformed padding, which blocks a class of signature forgery. Set for 64-bit and 32-bit programs (the WOW6432Node key too). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=489">CIS PDF p488</a></td>
+    </tr>
+    <tr>
+      <td>18.4.5</td>
+      <td>NetBT NodeType configuration</td>
+      <td>P-node (NodeType = DWORD 2)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\NodeType. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). NetBIOS names are resolved only through a WINS server, never by broadcast. The baseline already turns NetBIOS over TCP/IP off. NetBIOS-only devices on the local network, such as an old NAS, can no longer be found by name. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=493">CIS PDF p492</a></td>
+    </tr>
+    <tr>
+      <td>18.5.1</td>
+      <td>MSS: (AutoAdminLogon) Enable Automatic Logon</td>
+      <td>Disabled (value absent or REG_SZ 0)</td>
+      <td>Audit-only. Registry: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\AutoAdminLogon. Audit: Audit.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=499">CIS PDF p498</a></td>
+    </tr>
+    <tr>
+      <td>18.5.2</td>
+      <td>MSS: (DisableIPSourceRouting IPv6) IP source routing protection level</td>
+      <td>Highest protection (DWORD 2)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=501">CIS PDF p500</a></td>
+    </tr>
+    <tr>
+      <td>18.5.3</td>
+      <td>MSS: (DisableIPSourceRouting IPv4) IP source routing protection level</td>
+      <td>Highest protection (DWORD 2)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=503">CIS PDF p502</a></td>
+    </tr>
+    <tr>
+      <td>18.5.5</td>
+      <td>MSS: (EnableICMPRedirect) Allow ICMP redirects to override OSPF generated routes</td>
+      <td>Disabled (DWORD 0)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=507">CIS PDF p506</a></td>
+    </tr>
+    <tr>
+      <td>18.5.6</td>
+      <td>MSS: (KeepAliveTime) How often keep-alive packets are sent in milliseconds</td>
+      <td>Enabled: 300,000 (5 minutes) (KeepAliveTime = DWORD 300000)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\KeepAliveTime. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Idle TCP connections that ask for keep-alive packets send them every 5 minutes instead of every 2 hours, so dead connections are noticed sooner. Windows sends no keep-alive packets unless an application asks for them. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=509">CIS PDF p508</a></td>
+    </tr>
+    <tr>
+      <td>18.5.7</td>
+      <td>MSS: (NoNameReleaseOnDemand) Allow the computer to ignore NetBIOS name release requests except from WINS servers</td>
+      <td>Enabled (DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\NetBT\Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=511">CIS PDF p510</a></td>
+    </tr>
+    <tr>
+      <td>18.5.9</td>
+      <td>MSS: (SafeDllSearchMode) Enable Safe DLL Search Mode</td>
+      <td>Enabled (DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Control\Session Manager. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=515">CIS PDF p514</a></td>
+    </tr>
+    <tr>
+      <td>18.5.10</td>
+      <td>MSS: (TcpMaxDataRetransmissions IPv6) How many times unacknowledged data is retransmitted</td>
+      <td>Enabled: 3 (TcpMaxDataRetransmissions = DWORD 3)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\TCPIP6\Parameters\TcpMaxDataRetransmissions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). IPv6 TCP gives up after 3 retransmissions of unacknowledged data instead of the default 5, so a dead connection fails sooner. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=517">CIS PDF p516</a></td>
+    </tr>
+    <tr>
+      <td>18.5.11</td>
+      <td>MSS: (TcpMaxDataRetransmissions) How many times unacknowledged data is retransmitted</td>
+      <td>Enabled: 3 (TcpMaxDataRetransmissions = DWORD 3)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\TcpMaxDataRetransmissions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). IPv4 TCP gives up after 3 retransmissions of unacknowledged data instead of the default 5, so a dead connection fails sooner. On a very poor network connections may drop slightly earlier. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=519">CIS PDF p518</a></td>
+    </tr>
+    <tr>
+      <td>18.6.4.1</td>
+      <td>Turn off multicast name resolution (mDNS)</td>
+      <td>Enabled (EnableMDNS = DWORD 0)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=525">CIS PDF p524</a></td>
+    </tr>
+    <tr>
+      <td>18.6.4.2</td>
+      <td>Turn off default IPv6 DNS Servers</td>
+      <td>Enabled (DisableIPv6DefaultDnsServers = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient\DisableIPv6DefaultDnsServers. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows does not use its built-in default IPv6 DNS server addresses, so DNS queries go only to the servers your network or you configured. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=527">CIS PDF p526</a></td>
+    </tr>
+    <tr>
+      <td>18.6.7.4</td>
+      <td>Configure SMB v1 server authentication rate limiter</td>
+      <td>Enabled (EnableAuthRateLimiter = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanServer. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=540">CIS PDF p539</a></td>
+    </tr>
+    <tr>
+      <td>18.6.7.5</td>
+      <td>Turn off remote mailslots</td>
+      <td>Enabled; remote mailslots disabled (EnableMailslots = DWORD 0)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\Bowser. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=542">CIS PDF p541</a></td>
+    </tr>
+    <tr>
+      <td>18.6.7.6</td>
+      <td>Configure SMB v1 server</td>
+      <td>Minimum dialect SMB 3.1.1 (MinSmb2Dialect = DWORD 785)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanServer. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=544">CIS PDF p543</a></td>
+    </tr>
+    <tr>
+      <td>18.6.7.7</td>
+      <td>Configure SMB v1 server authentication rate limiter delay</td>
+      <td>At least 2000 ms (InvalidAuthenticationDelayTimeInMs)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanServer. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=546">CIS PDF p545</a></td>
+    </tr>
+    <tr>
+      <td>18.6.8.4</td>
+      <td>Enable insecure guest logons</td>
+      <td>Disabled (AllowInsecureGuestAuth = DWORD 0)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=555">CIS PDF p554</a></td>
+    </tr>
+    <tr>
+      <td>18.6.8.5</td>
+      <td>Turn off remote mailslots</td>
+      <td>Enabled; client remote mailslots disabled (EnableMailslots = DWORD 0)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=557">CIS PDF p556</a></td>
+    </tr>
+    <tr>
+      <td>18.6.8.6</td>
+      <td>Configure SMB v1 client</td>
+      <td>Minimum dialect SMB 3.1.1 (MinSmb2Dialect = DWORD 785)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=559">CIS PDF p558</a></td>
+    </tr>
+    <tr>
+      <td>18.6.8.7</td>
+      <td>Configure SMB v1 client encryption</td>
+      <td>Required (RequireEncryption = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=561">CIS PDF p560</a></td>
+    </tr>
+    <tr>
+      <td>18.6.11.2</td>
+      <td>Prohibit installation and configuration of Network Bridge on your DNS domain network</td>
+      <td>Enabled (NC_AllowNetBridge_NLA = DWORD 0)</td>
+      <td>Registry policy: Network Connections. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=574">CIS PDF p573</a></td>
+    </tr>
+    <tr>
+      <td>18.6.11.3</td>
+      <td>Prohibit use of Internet Connection Sharing on your DNS domain network</td>
+      <td>Enabled (NC_ShowSharedAccessUI = DWORD 0)</td>
+      <td>Registry policy: Network Connections. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=576">CIS PDF p575</a></td>
+    </tr>
+    <tr>
+      <td>18.6.21.1</td>
+      <td>Minimize the number of simultaneous connections to the Internet or a Windows Domain</td>
+      <td>Enabled (fMinimizeConnections = DWORD 3)</td>
+      <td>Registry policy: WcmSvc GroupPolicy. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=594">CIS PDF p593</a></td>
+    </tr>
+    <tr>
+      <td>18.9.4.2</td>
+      <td>Remote host allows delegation of non-exportable credentials</td>
+      <td>Enabled (AllowProtectedCreds = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation\AllowProtectedCreds. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Allows Remote Credential Guard, so a remote desktop session can use the user's credentials without sending them to the remote computer. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=650">CIS PDF p649</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.1</td>
+      <td>Enable Virtualization Based Security</td>
+      <td>Enabled (EnableVirtualizationBasedSecurity = DWORD 1)</td>
+      <td>DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=653">CIS PDF p652</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.2</td>
+      <td>Select Platform Security Level</td>
+      <td>Secure Boot (DWORD 1) or Secure Boot and DMA protection (DWORD 3)</td>
+      <td>DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=656">CIS PDF p655</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.3</td>
+      <td>Turn On Virtualization Based Security: HVCI</td>
+      <td>Enabled (HypervisorEnforcedCodeIntegrity = DWORD 1 with UEFI lock, or DWORD 2 without lock)</td>
+      <td>Deviation from CIS: CIS requires 1 (Enabled with UEFI lock). The baseline also accepts 2, and Remediations.ps1 sets 2, because a UEFI lock is stored in the firmware and rollback.ps1 cannot undo it; protection while enabled is the same. An existing 1 is left unchanged. Remediations.ps1 sets this policy only when Memory Integrity is already running, which proves the current drivers are compatible; otherwise it warns and leaves it to the operator (see Memory Integrity above). DeviceGuard policy; restart may be needed. Audit: Audit.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=659">CIS PDF p658</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.4</td>
+      <td>Require UEFI Memory Attributes Table</td>
+      <td>Enabled (HVCIMATRequired = DWORD 1)</td>
+      <td>DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=662">CIS PDF p661</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.5</td>
+      <td>Turn On Virtualization Based Security: Credential Guard</td>
+      <td>Enabled (LsaCfgFlags = DWORD 1 with UEFI lock, or DWORD 2 without lock)</td>
+      <td>Deviation from CIS: CIS requires 1 (Enabled with UEFI lock). The baseline also accepts 2, and Remediations.ps1 sets 2, because rollback.ps1 cannot undo a UEFI lock; an existing 1 is left unchanged. Credential Guard runs only on Windows Enterprise and Education; on Home and Pro the policy is set but has no effect. DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=664">CIS PDF p663</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.6</td>
+      <td>Configure System Guard Launch</td>
+      <td>Enabled (ConfigureSystemGuardLaunch = DWORD 1)</td>
+      <td>DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=667">CIS PDF p666</a></td>
+    </tr>
+    <tr>
+      <td>18.9.5.7</td>
+      <td>Kernel-mode Hardware-enforced Stack Protection</td>
+      <td>Enabled (ConfigureKernelShadowStacksLaunch = DWORD 1)</td>
+      <td>DeviceGuard policy; restart may be needed. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=669">CIS PDF p668</a></td>
+    </tr>
+    <tr>
+      <td>9.2.3 / 9.3.3</td>
+      <td>Windows Defender Firewall: display a notification</td>
+      <td>Disabled for Private and Public profiles (NotifyOnListen = False)</td>
+      <td>PowerShell: Get-/Set-NetFirewallProfile. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=371">CIS PDF 9.2.3 p370</a>, <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=386">CIS PDF 9.3.3 p385</a></td>
+    </tr>
+    <tr>
+      <td>18.9.4.1</td>
+      <td>Encryption Oracle Remediation</td>
+      <td>Force Updated Clients (AllowEncryptionOracle = DWORD 0)</td>
+      <td>Registry: CredSSP Parameters. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=648">CIS PDF p647</a></td>
+    </tr>
+    <tr>
+      <td>18.9.7.2</td>
+      <td>Prevent device metadata retrieval from the Internet</td>
+      <td>Enabled (PreventDeviceMetadataFromNetwork = DWORD 1)</td>
+      <td>Registry policy: Device Metadata. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=681">CIS PDF p680</a></td>
+    </tr>
+    <tr>
+      <td>18.9.7.1.1</td>
+      <td>Prevent installation of devices using drivers that match these device setup classes</td>
+      <td>Enabled (DenyDeviceClasses = DWORD 1)</td>
+      <td>Registry policy: DeviceInstall Restrictions. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=674">CIS PDF p673</a></td>
+    </tr>
+    <tr>
+      <td>18.9.7.1.2</td>
+      <td>Prevent installation of devices using drivers that match these device setup classes</td>
+      <td>Four IEEE 1394 device class GUIDs are listed</td>
+      <td>Registry policy: DenyDeviceClasses subkey values 1?4. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=676">CIS PDF p675</a></td>
+    </tr>
+    <tr>
+      <td>18.9.7.1.3</td>
+      <td>Prevent installation of devices using drivers that match these device setup classes (also apply to matching devices that are already installed)</td>
+      <td>Enabled (DenyDeviceClassesRetroactive = DWORD 1)</td>
+      <td>Registry policy: DeviceInstall Restrictions. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=679">CIS PDF p678</a></td>
+    </tr>
+    <tr>
+      <td>18.9.13.1</td>
+      <td>Boot-Start Driver Initialization Policy</td>
+      <td>Good, unknown, and bad but critical drivers allowed (DriverLoadPolicy = DWORD 3)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Policies\EarlyLaunch. Audit: Audit.ps1; remediation: Remediations.ps1 where noted above. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=685">CIS PDF p684</a></td>
+    </tr>
+    <tr>
+      <td>18.9.17.1</td>
+      <td>Enable / disable CLFS logfile authentication</td>
+      <td>Enabled (ClfsAuthenticationChecking = DWORD 1)</td>
+      <td>Registry: HKLM\SYSTEM\CurrentControlSet\Policies\ClfsAuthenticationChecking. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The Common Log File System detects tampering with log files. This is the Windows default. Log files created on another computer fail to open until an administrator runs fsutil clfs authenticate. Takes effect after a restart. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=689">CIS PDF p688</a></td>
+    </tr>
+    <tr>
+      <td>18.9.19.2</td>
+      <td>Continue experiences on this device</td>
+      <td>Disabled (EnableCdp = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\EnableCdp. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The PC does not take part in cross-device experiences and is not discoverable by other devices. Handoff features of Phone Link and nearby sharing stop working. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=693">CIS PDF p692</a></td>
+    </tr>
+    <tr>
+      <td>18.9.20.1.2</td>
+      <td>Turn off downloading of print drivers over HTTP</td>
+      <td>Enabled (DisableWebPnPDownload = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\DisableWebPnPDownload. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Does not stop printing to network or Wi-Fi printers; it only blocks downloading printer drivers over HTTP. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=699">CIS PDF p698</a></td>
+    </tr>
+    <tr>
+      <td>18.9.20.1.6</td>
+      <td>Turn off Internet download for Web publishing and online ordering wizards</td>
+      <td>Enabled (NoWebServices = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\NoWebServices. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The wizards do not download their provider lists from the Internet. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=707">CIS PDF p706</a></td>
+    </tr>
+    <tr>
+      <td>18.9.27.1</td>
+      <td>Allow Custom SSPs and APs to be loaded into LSASS</td>
+      <td>Disabled (AllowCustomSSPsAPs = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\AllowCustomSSPsAPs. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Third-party sign-in or authentication packages that load into LSASS stop working. Takes effect after Windows restarts. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=734">CIS PDF p733</a></td>
+    </tr>
+    <tr>
+      <td>18.9.29.1</td>
+      <td>Block user from showing account details on sign-in</td>
+      <td>Enabled (BlockUserFromShowingAccountDetailsOnSignin = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\BlockUserFromShowingAccountDetailsOnSignin. Audit: Audit.ps1 prints an information message only ([INFO]); it is not a pass/fail check, so it never fails the audit or raises a toast. Remediations.ps1 does not set it and does not change an existing value: an intended exception to CIS, because with the policy on the sign-in screen does not show the account name or e-mail address and the Windows setting "Show account details such as my email address on the sign-in screen" is turned off, which confuses regular users. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=743">CIS PDF p742</a></td>
+    </tr>
+    <tr>
+      <td>18.9.29.2</td>
+      <td>Do not display network selection UI</td>
+      <td>Enabled (DontDisplayNetworkSelectionUI = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\DontDisplayNetworkSelectionUI. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The network (for example the Wi-Fi network) cannot be changed on the sign-in screen; sign in first. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=745">CIS PDF p744</a></td>
+    </tr>
+    <tr>
+      <td>18.9.29.3</td>
+      <td>Turn off app notifications on the lock screen</td>
+      <td>Enabled (DisableLockScreenAppNotifications = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\DisableLockScreenAppNotifications. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Notification toasts are not shown while the PC is locked. They are still shown while you are signed in, and missed ones are in the notification center after you unlock. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=747">CIS PDF p746</a></td>
+    </tr>
+    <tr>
+      <td>18.9.29.4</td>
+      <td>Turn on convenience PIN sign-in</td>
+      <td>Disabled (AllowDomainPINLogon = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\AllowDomainPINLogon. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The convenience PIN (a weaker PIN for domain accounts) is off. The Windows Hello PIN is a different feature and is not affected. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=749">CIS PDF p748</a></td>
+    </tr>
+    <tr>
+      <td>18.9.35.6.1</td>
+      <td>Allow network connectivity during connected-standby (on battery)</td>
+      <td>Disabled (DCSettingIndex = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\f15576e8-98b7-4186-b944-eafa664402d9\DCSettingIndex. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). While asleep on battery the PC has no network connectivity, so network activity cannot wake it and background sync pauses. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=760">CIS PDF p759</a></td>
+    </tr>
+    <tr>
+      <td>18.9.35.6.2</td>
+      <td>Allow network connectivity during connected-standby (plugged in)</td>
+      <td>Disabled (ACSettingIndex = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\f15576e8-98b7-4186-b944-eafa664402d9\ACSettingIndex. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). While asleep and plugged in the PC has no network connectivity, so network activity cannot wake it and background sync pauses. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=762">CIS PDF p761</a></td>
+    </tr>
+    <tr>
+      <td>18.9.35.6.5</td>
+      <td>Require a password when a computer wakes (on battery)</td>
+      <td>Enabled (DCSettingIndex = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51\DCSettingIndex. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=768">CIS PDF p767</a></td>
+    </tr>
+    <tr>
+      <td>18.9.35.6.6</td>
+      <td>Require a password when a computer wakes (plugged in)</td>
+      <td>Enabled (ACSettingIndex = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51\ACSettingIndex. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=770">CIS PDF p769</a></td>
+    </tr>
+    <tr>
+      <td>18.9.37.1</td>
+      <td>Configure Offer Remote Assistance</td>
+      <td>Disabled (fAllowUnsolicited = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\fAllowUnsolicited. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Applies only to receiving help on this PC through the classic Windows Remote Assistance. Giving help to someone else is not affected, and Quick Assist is not affected in either direction. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=774">CIS PDF p773</a></td>
+    </tr>
+    <tr>
+      <td>18.9.37.2</td>
+      <td>Configure Solicited Remote Assistance</td>
+      <td>Disabled (fAllowToGetHelp = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\fAllowToGetHelp. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). This PC cannot send Windows Remote Assistance invitations. Applies only to receiving help on this PC through the classic Windows Remote Assistance. Giving help to someone else is not affected, and Quick Assist is not affected in either direction. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=776">CIS PDF p775</a></td>
+    </tr>
+    <tr>
+      <td>18.9.38.1</td>
+      <td>Enable RPC Endpoint Mapper Client Authentication</td>
+      <td>Enabled (EnableAuthEpResolution = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc\EnableAuthEpResolution. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Takes effect after Windows restarts. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=779">CIS PDF p778</a></td>
+    </tr>
+    <tr>
+      <td>18.9.38.2</td>
+      <td>Restrict Unauthenticated RPC clients</td>
+      <td>Enabled: Authenticated (RestrictRemoteClients = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Rpc\RestrictRemoteClients. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Takes effect after Windows restarts. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=781">CIS PDF p780</a></td>
+    </tr>
+    <tr>
+      <td>18.9.53.1.1</td>
+      <td>Enable Windows NTP Client</td>
+      <td>Enabled (Enabled = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient\Enabled. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The Windows time client synchronizes the clock with NTP servers (time.windows.com by default). Correct time matters for Kerberos, certificate validation and trustworthy logs. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=799">CIS PDF p798</a></td>
+    </tr>
+    <tr>
+      <td>18.9.54</td>
+      <td>Configure the behavior of the sudo command</td>
+      <td>Enabled: Disabled (Enabled = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Sudo\Enabled. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The sudo.exe command is not available. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=801">CIS PDF p800</a></td>
+    </tr>
+    <tr>
+      <td>18.10.4.2</td>
+      <td>Not allow per-user unsigned packages to install by default (requires explicitly allow per install)</td>
+      <td>Enabled (DisablePerUserUnsignedPackagesByDefault = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Appx\DisablePerUserUnsignedPackagesByDefault. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=814">CIS PDF p813</a></td>
+    </tr>
+    <tr>
+      <td>18.10.4.3</td>
+      <td>Prevent non-admin users from installing packaged Windows apps</td>
+      <td>Enabled (BlockNonAdminUserInstall = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Appx\BlockNonAdminUserInstall. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Standard (non-administrator) users cannot install Microsoft Store apps; an administrator must install them. CIS notes that this can stop standard users from starting Microsoft 365 (Office) apps. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=816">CIS PDF p815</a></td>
+    </tr>
+    <tr>
+      <td>18.10.5.1</td>
+      <td>Let Windows apps activate with voice while the system is locked</td>
+      <td>Enabled: Force Deny (LetAppsActivateWithVoiceAboveLock = DWORD 2)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy\LetAppsActivateWithVoiceAboveLock. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=819">CIS PDF p818</a></td>
+    </tr>
+    <tr>
+      <td>18.10.6.1</td>
+      <td>Allow Microsoft accounts to be optional</td>
+      <td>Enabled (MSAOptional = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\MSAOptional. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Apps that ask for a Microsoft account can be used without one. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=822">CIS PDF p821</a></td>
+    </tr>
+    <tr>
+      <td>18.10.8.1</td>
+      <td>Disallow Autoplay for non-volume devices</td>
+      <td>Enabled (NoAutoplayfornonVolume = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer\NoAutoplayfornonVolume. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). AutoPlay is not offered for cameras and phones. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=828">CIS PDF p827</a></td>
+    </tr>
+    <tr>
+      <td>18.10.8.2</td>
+      <td>Set the default behavior for AutoRun</td>
+      <td>Enabled: Do not execute any autorun commands (NoAutorun = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\NoAutorun. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=830">CIS PDF p829</a></td>
+    </tr>
+    <tr>
+      <td>18.10.9.1.1</td>
+      <td>Configure enhanced anti-spoofing</td>
+      <td>Enabled (EnhancedAntiSpoofing = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Biometrics\FacialFeatures\EnhancedAntiSpoofing. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows Hello face sign-in uses enhanced anti-spoofing on cameras that support it. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=836">CIS PDF p835</a></td>
+    </tr>
+    <tr>
+      <td>18.10.13.1</td>
+      <td>Turn off cloud consumer account state content</td>
+      <td>Enabled (DisableConsumerAccountStateContent = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent\DisableConsumerAccountStateContent. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows does not show cloud content tied to the state of the consumer Microsoft account. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=910">CIS PDF p909</a></td>
+    </tr>
+    <tr>
+      <td>18.10.14.1</td>
+      <td>Require pin for pairing</td>
+      <td>Always (RequirePinForPairing = DWORD 2); first time (1) is also accepted</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Connect\RequirePinForPairing. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Pairing with a wireless display always needs a PIN. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=917">CIS PDF p916</a></td>
+    </tr>
+    <tr>
+      <td>18.10.15.1</td>
+      <td>Do not display the password reveal button</td>
+      <td>Enabled (DisablePasswordReveal = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\CredUI\DisablePasswordReveal. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=920">CIS PDF p919</a></td>
+    </tr>
+    <tr>
+      <td>18.10.15.2</td>
+      <td>Enumerate administrator accounts on elevation</td>
+      <td>Disabled (EnumerateAdministrators = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI\EnumerateAdministrators. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=922">CIS PDF p921</a></td>
+    </tr>
+    <tr>
+      <td>18.10.15.3</td>
+      <td>Prevent the use of security questions for local accounts</td>
+      <td>Enabled (NoLocalPasswordResetQuestions = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\System\NoLocalPasswordResetQuestions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Local accounts cannot reset a forgotten password with security questions, which are easy to guess. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=924">CIS PDF p923</a></td>
+    </tr>
+    <tr>
+      <td>18.10.16.3</td>
+      <td>Do not show feedback notifications</td>
+      <td>Enabled (DoNotShowFeedbackNotifications = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection\DoNotShowFeedbackNotifications. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows does not ask for feedback. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=932">CIS PDF p931</a></td>
+    </tr>
+    <tr>
+      <td>18.10.17.1</td>
+      <td>Delivery Optimization: Download Mode</td>
+      <td>Not Internet peering (DODownloadMode = DWORD 0; 1 or 2 also accepted)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization\DODownloadMode. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The PC does not download updates from, or send them to, peers on the Internet. 1 (peers on the local network) and 2 (peers in a private group) are left unchanged. Any other value, including 3 (Internet peering, the default on Windows Home and Pro), 99 and 100 (bypass, deprecated on Windows 11), or no value at all, fails the check, and Remediations.ps1 sets 0 (Microsoft servers only, no peering). With 0 the PC also stops exchanging update data with other PCs on the local network. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=941">CIS PDF p940</a></td>
+    </tr>
+    <tr>
+      <td>18.10.18.2</td>
+      <td>Enable App Installer Experimental Features</td>
+      <td>Disabled (EnableExperimentalFeatures = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppInstaller\EnableExperimentalFeatures. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=946">CIS PDF p945</a></td>
+    </tr>
+    <tr>
+      <td>18.10.18.3</td>
+      <td>Enable App Installer Hash Override</td>
+      <td>Disabled (EnableHashOverride = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppInstaller\EnableHashOverride. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=948">CIS PDF p947</a></td>
+    </tr>
+    <tr>
+      <td>18.10.18.4</td>
+      <td>Enable App Installer Local Archive Malware Scan Override</td>
+      <td>Disabled (EnableLocalArchiveMalwareScanOverride = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppInstaller\EnableLocalArchiveMalwareScanOverride. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=950">CIS PDF p949</a></td>
+    </tr>
+    <tr>
+      <td>18.10.18.5</td>
+      <td>Enable App Installer Microsoft Store Source Certificate Validation Bypass</td>
+      <td>Disabled (EnableBypassCertificatePinningForMicrosoftStore = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppInstaller\EnableBypassCertificatePinningForMicrosoftStore. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=952">CIS PDF p951</a></td>
+    </tr>
+    <tr>
+      <td>18.10.18.6</td>
+      <td>Enable App Installer ms-appinstaller protocol</td>
+      <td>Disabled (EnableMSAppInstallerProtocol = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppInstaller\EnableMSAppInstallerProtocol. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Apps cannot be installed by clicking an ms-appinstaller link on a website. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=954">CIS PDF p953</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.1.1</td>
+      <td>Application: Control Event Log behavior when the log file reaches its maximum size</td>
+      <td>Disabled (Retention = REG_SZ 0): the oldest events are overwritten when the log is full</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application\Retention. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Logging continues when the log is full instead of stopping. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=961">CIS PDF p960</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.1.2</td>
+      <td>Application: Specify the maximum log file size (KB)</td>
+      <td>Enabled: 32,768 or greater (MaxSize = DWORD 32768 or greater)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Application\MaxSize. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The policy takes precedence over the size set in the log properties, so Remediations.ps1 writes the larger of 32768 and the size the log currently uses, and leaves an existing value of 32768 or more unchanged; a larger size is never lowered. It also raises the size the log currently uses to 32 MB, so the change applies without a restart. Once the policy is set, the size can no longer be changed in Event Viewer. Windows default: 20,480 KB (20 MB). <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=963">CIS PDF p962</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.2.1</td>
+      <td>Security: Control Event Log behavior when the log file reaches its maximum size</td>
+      <td>Disabled (Retention = REG_SZ 0): the oldest events are overwritten when the log is full</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security\Retention. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Logging continues when the log is full instead of stopping. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=966">CIS PDF p965</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.2.2</td>
+      <td>Security: Specify the maximum log file size (KB)</td>
+      <td>Enabled: 196,608 or greater (MaxSize = DWORD 196608 or greater)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security\MaxSize. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The policy takes precedence over the size set in the log properties, so Remediations.ps1 writes the larger of 196608 and the size the log currently uses, and leaves an existing value of 196608 or more unchanged; a larger size is never lowered. It also raises the size the Security log currently uses to 192 MB, so the change applies without a restart. Once the policy is set, the size can no longer be changed in Event Viewer. Windows default: 20,480 KB (20 MB). <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=968">CIS PDF p967</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.3.1</td>
+      <td>Setup: Control Event Log behavior when the log file reaches its maximum size</td>
+      <td>Disabled (Retention = REG_SZ 0): the oldest events are overwritten when the log is full</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup\Retention. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Logging continues when the log is full instead of stopping. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=971">CIS PDF p970</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.3.2</td>
+      <td>Setup: Specify the maximum log file size (KB)</td>
+      <td>Enabled: 32,768 or greater (MaxSize = DWORD 32768 or greater)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Setup\MaxSize. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The policy takes precedence over the size set in the log properties, so Remediations.ps1 writes the larger of 32768 and the size the log currently uses, and leaves an existing value of 32768 or more unchanged; a larger size is never lowered. It also raises the size the log currently uses to 32 MB, so the change applies without a restart. Once the policy is set, the size can no longer be changed in Event Viewer. Windows default: about 1 MB. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=973">CIS PDF p972</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.4.1</td>
+      <td>System: Control Event Log behavior when the log file reaches its maximum size</td>
+      <td>Disabled (Retention = REG_SZ 0): the oldest events are overwritten when the log is full</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\System\Retention. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Logging continues when the log is full instead of stopping. <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=976">CIS PDF p975</a></td>
+    </tr>
+    <tr>
+      <td>18.10.26.4.2</td>
+      <td>System: Specify the maximum log file size (KB)</td>
+      <td>Enabled: 32,768 or greater (MaxSize = DWORD 32768 or greater)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\System\MaxSize. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The policy takes precedence over the size set in the log properties, so Remediations.ps1 writes the larger of 32768 and the size the log currently uses, and leaves an existing value of 32768 or more unchanged; a larger size is never lowered. It also raises the size the log currently uses to 32 MB, so the change applies without a restart. Once the policy is set, the size can no longer be changed in Event Viewer. Windows default: 20,480 KB (20 MB). <a href="https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-eventlog">Microsoft documentation (Event Log policies)</a>. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=978">CIS PDF p977</a></td>
+    </tr>
+    <tr>
+      <td>18.10.29.3</td>
+      <td>Turn off Data Execution Prevention for Explorer</td>
+      <td>Disabled (NoDataExecutionPrevention = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer\NoDataExecutionPrevention. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=984">CIS PDF p983</a></td>
+    </tr>
+    <tr>
+      <td>18.10.29.4</td>
+      <td>Do not apply the Mark of the Web tag to files copied from insecure sources</td>
+      <td>Disabled (DisableMotWOnInsecurePathCopy = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer\DisableMotWOnInsecurePathCopy. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=986">CIS PDF p985</a></td>
+    </tr>
+    <tr>
+      <td>18.10.29.5</td>
+      <td>Turn off heap termination on corruption</td>
+      <td>Disabled (NoHeapTerminationOnCorruption = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer\NoHeapTerminationOnCorruption. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=988">CIS PDF p987</a></td>
+    </tr>
+    <tr>
+      <td>18.10.29.6</td>
+      <td>Turn off shell protocol protected mode</td>
+      <td>Disabled (PreXPSP2ShellProtocolBehavior = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\PreXPSP2ShellProtocolBehavior. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=990">CIS PDF p989</a></td>
+    </tr>
+    <tr>
+      <td>18.10.57.2.3</td>
+      <td>Do not allow passwords to be saved (Remote Desktop Connection Client)</td>
+      <td>Enabled (DisablePasswordSaving = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\DisablePasswordSaving. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1040">CIS PDF p1039</a></td>
+    </tr>
+    <tr>
+      <td>18.10.58.1</td>
+      <td>Prevent downloading of enclosures</td>
+      <td>Enabled (DisableEnclosureDownload = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Internet Explorer\Feeds\DisableEnclosureDownload. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). RSS feeds do not download attached files (enclosures). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1082">CIS PDF p1081</a></td>
+    </tr>
+    <tr>
+      <td>18.10.59.5</td>
+      <td>Allow indexing of encrypted files</td>
+      <td>Disabled (AllowIndexingEncryptedStoresOrItems = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search\AllowIndexingEncryptedStoresOrItems. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows Search does not index encrypted files, so their content does not end up in the search index, where it would no longer be protected by the file's encryption. Already the Windows default; the policy keeps it that way. Changing it rebuilds the index. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1092">CIS PDF p1091</a></td>
+    </tr>
+    <tr>
+      <td>18.10.73.1</td>
+      <td>Allow Recall to be enabled</td>
+      <td>Disabled (AllowRecallEnablement = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI\AllowRecallEnablement. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Remediations.ps1 sets this only when the Recall optional feature is not enabled, because turning Recall off deletes its saved snapshots, and rollback cannot restore them. If Recall is enabled, turn it off yourself first. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1117">CIS PDF p1116</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.1.1</td>
+      <td>Enhanced Phishing Protection: Automatic Data Collection</td>
+      <td>Enabled (CaptureThreatWindow = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components. Audit: Audit.ps1; remediation: Remediations.ps1. Windows 11 22H2 and later only; skipped (reported as [SKIP]) on older versions. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1121">CIS PDF p1120</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.1.2</td>
+      <td>Enhanced Phishing Protection: Notify Malicious</td>
+      <td>Enabled (NotifyMalicious = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components. Audit: Audit.ps1; remediation: Remediations.ps1. Windows 11 22H2 and later only; skipped (reported as [SKIP]) on older versions. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1123">CIS PDF p1122</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.1.3</td>
+      <td>Enhanced Phishing Protection: Notify Password Reuse</td>
+      <td>Enabled (NotifyPasswordReuse = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components. Audit: Audit.ps1; remediation: Remediations.ps1. Windows 11 22H2 and later only; skipped (reported as [SKIP]) on older versions. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1125">CIS PDF p1124</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.1.4</td>
+      <td>Enhanced Phishing Protection: Notify Unsafe App</td>
+      <td>Enabled (NotifyUnsafeApp = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components. Audit: Audit.ps1; remediation: Remediations.ps1. Windows 11 22H2 and later only; skipped (reported as [SKIP]) on older versions. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1127">CIS PDF p1126</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.1.5</td>
+      <td>Enhanced Phishing Protection: Service Enabled</td>
+      <td>Enabled (ServiceEnabled = DWORD 1)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components. Audit: Audit.ps1; remediation: Remediations.ps1. Windows 11 22H2 and later only; skipped (reported as [SKIP]) on older versions. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1129">CIS PDF p1128</a></td>
+    </tr>
+    <tr>
+      <td>18.10.77.2.1</td>
+      <td>Configure Windows Defender SmartScreen (Check apps and files)</td>
+      <td>Enabled: Warn and prevent bypass (EnableSmartScreen = DWORD 1, ShellSmartScreenLevel = REG_SZ Block)</td>
+      <td>Registry policy: HKLM\SOFTWARE\Policies\Microsoft\Windows\System. Audit: Audit.ps1; remediation: Remediations.ps1. Users cannot choose "Run anyway" for an unrecognized downloaded app; to run a trusted file, use its Properties &gt; Unblock. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1132">CIS PDF p1131</a></td>
+    </tr>
+    <tr>
+      <td>18.10.79.1</td>
+      <td>Enables or disables Windows Game Recording and Broadcasting</td>
+      <td>Disabled (AllowGameDVR = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR\AllowGameDVR. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Game Bar recording, screenshots and broadcasting are not allowed. The name is the policy name; the recommended state is Disabled. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1136">CIS PDF p1135</a></td>
+    </tr>
+    <tr>
+      <td>18.10.80.1</td>
+      <td>Enable ESS with Supported Peripherals</td>
+      <td>Enabled (EnableESSwithSupportedPeripherals = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Policies\PassportForWork\Biometrics\EnableESSwithSupportedPeripherals. Audit: Audit.ps1 prints an information message only ([INFO]); it is not a pass/fail check, so it never fails the audit or raises a toast. Remediations.ps1 does not set it either, because setting it can lock you out of Windows Hello: with it on, Windows blocks face cameras and fingerprint readers that do not support Enhanced Sign-in Security and deletes the saved enrollments, and rollback cannot bring the sensor back. Turn it on yourself only if your hardware supports it, and keep your PIN or password at hand. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1139">CIS PDF p1138</a></td>
+    </tr>
+    <tr>
+      <td>18.10.81.2</td>
+      <td>Allow Windows Ink Workspace</td>
+      <td>Enabled: On, but disallow access above lock, or Enabled: Disabled (AllowWindowsInkWorkspace = DWORD 1 or 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace\AllowWindowsInkWorkspace. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Remediations.ps1 sets 1 and leaves an existing 0 unchanged. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1144">CIS PDF p1143</a></td>
+    </tr>
+    <tr>
+      <td>18.10.82.1</td>
+      <td>Allow user control over installs</td>
+      <td>Disabled (EnableUserControl = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer\EnableUserControl. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1147">CIS PDF p1146</a></td>
+    </tr>
+    <tr>
+      <td>18.10.82.2</td>
+      <td>Always install with elevated privileges</td>
+      <td>Disabled (AlwaysInstallElevated = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1149">CIS PDF p1148</a></td>
+    </tr>
+    <tr>
+      <td>18.10.83.1</td>
+      <td>Configure the transmission of the user's password in the content of MPR notifications sent by winlogon</td>
+      <td>Disabled (EnableMPR = DWORD 0)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableMPR. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1154">CIS PDF p1153</a></td>
+    </tr>
+    <tr>
+      <td>18.10.83.2</td>
+      <td>Sign-in and lock last interactive user automatically after a restart</td>
+      <td>Disabled (DisableAutomaticRestartSignOn = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\DisableAutomaticRestartSignOn. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). After a restart for updates, Windows does not sign you in and lock automatically; sign in again. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1156">CIS PDF p1155</a></td>
+    </tr>
+    <tr>
+      <td>18.10.93.2.1</td>
+      <td>Prevent users from modifying settings (Windows Security, App and browser protection)</td>
+      <td>Enabled (DisallowExploitProtectionOverride = DWORD 1)</td>
+      <td>Registry: HKLM\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\App and Browser protection\DisallowExploitProtectionOverride. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Users cannot change the Exploit protection settings in Windows Security. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1193">CIS PDF p1192</a></td>
+    </tr>
+    <tr>
+      <td>18.11.2</td>
+      <td>Disable HTTP proxy features: Disable proxy authentication</td>
+      <td>Disable authentication over loopback interfaces (DisableProxyAuthenticationSchemes = DWORD 256; 287 also accepted)</td>
+      <td>Registry: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\DisableProxyAuthenticationSchemes. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows cannot authenticate over a loopback interface through the HTTP proxy features. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1219">CIS PDF p1218</a></td>
+    </tr>
+    <tr>
+      <td>19.5.1.1</td>
+      <td>Turn off toast notifications on the lock screen</td>
+      <td>Enabled (NoToastApplicationNotificationOnLockScreen = DWORD 1)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications\NoToastApplicationNotificationOnLockScreen. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Notifications are not shown on the lock screen. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1225">CIS PDF p1224</a></td>
+    </tr>
+    <tr>
+      <td>19.7.5.1</td>
+      <td>Do not preserve zone information in file attachments</td>
+      <td>Disabled (SaveZoneInformation = DWORD 2): zone information is kept</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments\SaveZoneInformation. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Downloaded and received files keep their Internet zone mark (Mark of the Web), so Windows and SmartScreen can judge the risk. This is the Windows default. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1235">CIS PDF p1234</a></td>
+    </tr>
+    <tr>
+      <td>19.7.5.2</td>
+      <td>Notify antivirus programs when opening attachments</td>
+      <td>Enabled (ScanWithAntiVirus = DWORD 3)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments\ScanWithAntiVirus. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows asks the installed antivirus program to scan an attachment when it is opened. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1237">CIS PDF p1236</a></td>
+    </tr>
+    <tr>
+      <td>19.7.8.1</td>
+      <td>Configure Windows spotlight on lock screen</td>
+      <td>Disabled (ConfigureWindowsSpotlight = DWORD 2)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Policies\Microsoft\Windows\CloudContent\ConfigureWindowsSpotlight. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows Spotlight is not used on the lock screen. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1241">CIS PDF p1240</a></td>
+    </tr>
+    <tr>
+      <td>19.7.8.2</td>
+      <td>Do not suggest third-party content in Windows spotlight</td>
+      <td>Enabled (DisableThirdPartySuggestions = DWORD 1)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Policies\Microsoft\Windows\CloudContent\DisableThirdPartySuggestions. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Windows Spotlight does not suggest content from third parties. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1243">CIS PDF p1242</a></td>
+    </tr>
+    <tr>
+      <td>19.7.8.5</td>
+      <td>Turn off Spotlight collection on Desktop</td>
+      <td>Enabled (DisableSpotlightCollectionOnDesktop = DWORD 1)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Policies\Microsoft\Windows\CloudContent\DisableSpotlightCollectionOnDesktop. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). The Spotlight picture collection is not shown on the desktop. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1249">CIS PDF p1248</a></td>
+    </tr>
+    <tr>
+      <td>19.7.26.1</td>
+      <td>Prevent users from sharing files within their profile</td>
+      <td>Enabled (NoInplaceSharing = DWORD 1)</td>
+      <td>Registry (every loaded user profile): HKEY_USERS\&lt;user SID&gt;\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\NoInplaceSharing. Audit: Audit.ps1; remediation: Remediations.ps1 (with rollback). Users cannot share files from their profile folder. Applies to every user profile that is loaded (signed in) when the script runs. Another user gets it when Remediations.ps1 runs while that user is signed in. A user can change their own policy values; the audit reports such drift. Without administrator rights the audit can only read the current user's hive; rollback restores the value while the profile is loaded. <a href="CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.pdf#page=1256">CIS PDF p1255</a></td>
+    </tr>
+  </tbody>
+</table>

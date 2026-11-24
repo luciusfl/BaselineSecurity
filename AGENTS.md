@@ -1,0 +1,17 @@
+# Project instructions
+- When adding or changing security checks or remediation settings in `Audit.ps1` or `Remediations.ps1`, update `SecurityBaselineSettings.html` in the same change so the documented setting and expected state stay aligned with the scripts. 
+- Update the `Design.md` file if needed.
+-Audit.ps1 should strictly only carry out read-only opeations.
+- Remediations.ps1 and Rollback.ps1 must be idempotent, meaning subsequent runs are possible without causing side effects.
+- Clearly mark checks that are audit-only and are not configured by `Remediations.ps1`.
+- Make sure Remediations.ps1 creates the proper undo steps in rollback.ps1. If there is a remediation setting that cannot be rolled back, then omit that remediation step and instead print out a message why this setting is not remediated.
+- Verify that the Readme.md remains accurate. In general, Readme.md should be kept very brief and to the point, since the details are in the Design.md file.
+- If possible try to find documention link from trustworthy and authoritative sources, such as Microsoft.com or cisecurity.org and add them to SecurityBaselineSettings.html.
+- Use the CIS_Microsoft_Windows_11_Stand-alone_Benchmark_v5.0.0.JSON file for faster parsing instead of the PDF file with the same name. However, if the JSON and PDF files disagree then the more secure setting shall be used. However, if there is a disagreement between the PDF and the JSON file, say for example about the datatype, then the official Microsoft documentation should be inspected.
+- The system should only depend on the version of PowerShell that ships with Windows 11 or less.
+- Analyze Audit.ps1 and Remedian.ps1 scripts and the system as a whole for security vulnerabilities, or backdoors, or exfiltration of secrets. Ensure that permissions are set properly, such that the system cannot be easily exploited by a non-elevated process or user.
+- If new checks are added or updated, don't forget to run Update-AuditCheckDetails.ps1.
+- Windows PowerShell 5.1 reads a .ps1 file without a byte order mark (BOM) in the ANSI code page, not UTF-8, so non-ASCII characters break it (for example the em dash used in Audit.ps1 messages ends a string). Save every .ps1 file that contains a non-ASCII character as UTF-8 with BOM, keep the BOM when editing such a file, or keep the file pure ASCII. Read text files with [System.IO.File]::ReadAllText or Get-Content -Encoding UTF8, not plain Get-Content, unless the file has its own BOM.
+- Code defensively and if in doubt choose the more secure and reliable option.
+- When disabling services, consider the service dependencies.
+- Prefer simple designs, if there is a choice and the benefit of a more complex design are minor, or covers only a very rare corner case.

@@ -1,0 +1,5 @@
+**/bin/
+**/obj/
+/publish/
+/rollback.ps1
+/CopyFiles.cmd

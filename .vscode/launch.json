@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "PowerShell",
+            "request": "launch",
+            "name": "Debug Audit.ps1 (Windows PowerShell 5.1)",
+            "script": "${workspaceFolder}\\Audit.ps1",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
