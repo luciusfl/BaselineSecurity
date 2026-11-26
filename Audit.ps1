@@ -1298,6 +1298,7 @@ $edgeApprovedExtensionIds = @(
     'jbkfoedolllekgbhcbcoahefnbanhhlh'  # Bitwarden Password Manager (Microsoft Edge Add-ons ID)
     'dppgmdbiimibapkepcbdbmkaabgiofem'  # 1Password Password Manager (Microsoft Edge Add-ons ID)
     'gehmmocbbkpblljhkekmfhjpfbkclbph'  # Dashlane Password Manager (Microsoft Edge Add-ons ID)
+    'mfbcdcnpokpoajjciilocoachedjkima'  # iCloud Passwords by Apple (Microsoft Edge Add-ons ID)
 )
 $chromeApprovedExtensionIds = @(
     'hdokiejnpimakedhajhdlcegeplioahd'  # LastPass Password Manager (Chrome Web Store ID)
@@ -1309,6 +1310,7 @@ $chromeApprovedExtensionIds = @(
     'nngceckbapebfimnlniiiahkandclblb'  # Bitwarden Password Manager (Chrome Web Store ID)
     'aeblfdkhhhdcdjpifhhbdiojplfjncoa'  # 1Password Password Manager (Chrome Web Store ID)
     'fdjamakpfbbddfjaooikfcpapjohcfmg'  # Dashlane Password Manager (Chrome Web Store ID)
+    'pejdijmoenmkgeppbflobdenhhabjlaj'  # iCloud Passwords by Apple (Chrome Web Store ID)
 )
 # Chrome policies from the CIS Google Chrome Group Policy Benchmark v1.1.1: only the
 # recommendations with a clear security value on a stand-alone PC (Safe Browsing, blocked
